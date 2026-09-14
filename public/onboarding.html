@@ -1,0 +1,634 @@
+<!DOCTYPE html>
+<html lang="pt" data-bs-theme="dark">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Bem-vindo(a) ao GPI Track</title>
+<link rel="icon" href="/img/unikivi-logo.png" />
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" />
+<link rel="stylesheet" href="/css/styles.css" />
+<style>
+  body { display: flex; align-items: center; justify-content: center; padding: 24px; }
+  .ob-shell { width: 100%; max-width: 660px; }
+  .ob-brand { display: flex; align-items: center; gap: 10px; justify-content: center; margin-bottom: 20px; }
+  .ob-brand img { width: 34px; height: 34px; border-radius: 50%; background: #fff; padding: 2px; }
+
+  .ob-card {
+    background: var(--card); border: 1px solid var(--border); border-radius: 20px;
+    padding: 0; box-shadow: 0 25px 60px -20px rgba(0,0,0,0.6); overflow: hidden;
+  }
+  .ob-progress-track { height: 4px; background: var(--navy-900); }
+  .ob-progress-fill { height: 100%; background: linear-gradient(90deg, var(--cyan-dim), var(--cyan)); width: 0%; transition: width .45s cubic-bezier(.4,0,.2,1); }
+
+  .ob-topline { display: flex; justify-content: space-between; align-items: center; padding: 18px 30px 0; font-size: 12px; color: var(--ink-faint); font-weight: 600; letter-spacing: .3px; }
+
+  .ob-viewport { position: relative; padding: 20px 34px 6px; min-height: 320px; overflow: hidden; }
+  .ob-stage {
+    display: flex; flex-direction: column; align-items: center; text-align: center;
+    transition: transform .4s cubic-bezier(.4,0,.2,1), opacity .4s cubic-bezier(.4,0,.2,1);
+  }
+  .ob-stage.entering-next { transform: translateX(28px); opacity: 0; }
+  .ob-stage.entering-prev { transform: translateX(-28px); opacity: 0; }
+  .ob-stage.leaving-next { transform: translateX(-28px); opacity: 0; }
+  .ob-stage.leaving-prev { transform: translateX(28px); opacity: 0; }
+
+  .ob-illustration { min-height: 148px; display: flex; align-items: center; justify-content: center; margin-bottom: 20px; width: 100%; }
+  .ob-stage h2 { font-size: 20px; margin: 0 0 8px; }
+  .ob-stage p.desc { color: var(--ink-dim); font-size: 13.5px; line-height: 1.6; max-width: 460px; margin: 0 0 4px; }
+  .ob-badge-try {
+    display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 700;
+    color: var(--success); background: rgba(52,199,123,0.12); border: 1px solid rgba(52,199,123,0.3);
+    padding: 4px 11px; border-radius: 999px; margin-top: 10px;
+  }
+
+  .ob-dots { display: flex; justify-content: center; gap: 7px; margin: 22px 0 20px; }
+  .ob-dots span { width: 7px; height: 7px; border-radius: 50%; background: var(--border); transition: all .3s cubic-bezier(.4,0,.2,1); cursor: pointer; }
+  .ob-dots span.active { background: var(--cyan); width: 22px; border-radius: 5px; }
+  .ob-dots span.done { background: var(--cyan-dim); }
+
+  .ob-actions { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 0 30px 26px; }
+  .ob-actions .btn { width: auto; padding: 10px 20px; transition: transform .15s, filter .15s, box-shadow .15s; }
+  .ob-actions .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 8px 20px -6px rgba(34,199,221,0.5); }
+  .ob-skip { background: transparent; border: none; color: var(--ink-faint); font-size: 12.5px; cursor: pointer; font-family: inherit; }
+  .ob-skip:hover { color: var(--ink-dim); }
+
+  /* ---------------- Passo: arrastar tarefas (funcional) ---------------- */
+  .ob-kanban-live { display: flex; gap: 10px; width: 100%; justify-content: center; user-select: none; }
+  .ob-col-live {
+    width: 108px; min-height: 140px; background: var(--navy-900); border-radius: 10px;
+    border: 1.5px dashed var(--border); padding: 8px 6px; transition: border-color .2s, background .2s;
+  }
+  .ob-col-live.hover-target { border-color: var(--cyan); background: rgba(34,199,221,0.06); }
+  .ob-col-live .t { font-size: 9.5px; color: var(--ink-faint); font-weight: 700; text-transform: uppercase; letter-spacing: .3px; margin-bottom: 8px; }
+  .ob-drag-card {
+    background: var(--navy-800); border: 1px solid var(--cyan-dim); border-left: 3px solid var(--cyan);
+    border-radius: 8px; padding: 9px 8px; font-size: 11px; cursor: grab; touch-action: none;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.3); position: relative; z-index: 5;
+    transition: transform .18s cubic-bezier(.4,0,.2,1), box-shadow .18s;
+  }
+  .ob-drag-card.dragging { cursor: grabbing; box-shadow: 0 14px 28px -8px rgba(0,0,0,0.55); transform: scale(1.06) rotate(-2deg); z-index: 20; }
+  .ob-drag-card.snap-back { transition: transform .35s cubic-bezier(.34,1.56,.64,1); }
+  .ob-drag-success { color: var(--success); font-size: 12px; font-weight: 700; margin-top: 12px; display: none; align-items: center; gap: 6px; justify-content: center; }
+  .ob-drag-success.show { display: flex; animation: obPop .4s cubic-bezier(.34,1.56,.64,1); }
+  @keyframes obPop { 0% { transform: scale(.7); opacity: 0; } 100% { transform: scale(1); opacity: 1; } }
+
+  /* ---------------- Passo: comentário (funcional) ---------------- */
+  .ob-chat-demo { width: 100%; max-width: 380px; text-align: left; }
+  .ob-chat-feed { min-height: 70px; display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }
+  .ob-chat-bubble {
+    background: var(--navy-900); border: 1px solid var(--border); border-radius: 12px 12px 12px 3px;
+    padding: 8px 12px; font-size: 12.5px; align-self: flex-start; max-width: 85%;
+    animation: obBubbleIn .35s cubic-bezier(.34,1.56,.64,1);
+  }
+  @keyframes obBubbleIn { from { transform: translateY(8px) scale(.94); opacity: 0; } to { transform: translateY(0) scale(1); opacity: 1; } }
+  .ob-typing-row { font-size: 11px; color: var(--ink-faint); height: 16px; display: flex; align-items: center; gap: 5px; opacity: 0; transition: opacity .2s; }
+  .ob-typing-row.show { opacity: 1; }
+  .ob-typing-row .dots span { display: inline-block; width: 4px; height: 4px; border-radius: 50%; background: var(--cyan); margin-right: 2px; animation: obTyping 1.1s infinite; }
+  .ob-typing-row .dots span:nth-child(2) { animation-delay: .18s; }
+  .ob-typing-row .dots span:nth-child(3) { animation-delay: .36s; }
+  @keyframes obTyping { 0%,100% { opacity: .25; transform: translateY(0); } 50% { opacity: 1; transform: translateY(-2px); } }
+  .ob-chat-input-row { display: flex; gap: 8px; }
+  .ob-chat-input-row input {
+    flex: 1; background: var(--navy-900); border: 1px solid var(--border); border-radius: 8px;
+    padding: 8px 11px; color: var(--ink); font-family: inherit; font-size: 12.5px;
+  }
+  .ob-chat-input-row input:focus { outline: none; border-color: var(--cyan); }
+  .ob-chat-input-row button {
+    background: var(--cyan); color: #06222A; border: none; border-radius: 8px; padding: 0 14px;
+    font-weight: 700; cursor: pointer; font-size: 12px; transition: filter .15s, transform .15s;
+  }
+  .ob-chat-input-row button:hover { filter: brightness(1.08); transform: translateY(-1px); }
+
+  /* ---------------- Passo: checklist (funcional) ---------------- */
+  .ob-checklist-demo { width: 100%; max-width: 320px; text-align: left; }
+  .ob-checklist-demo .row { display: flex; align-items: center; gap: 10px; padding: 6px 0; font-size: 13px; cursor: pointer; }
+  .ob-checklist-demo input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--cyan); cursor: pointer; }
+  .ob-checklist-demo .row.done span { text-decoration: line-through; color: var(--ink-faint); }
+  .ob-progress-bar-demo { height: 8px; border-radius: 5px; background: var(--navy-900); overflow: hidden; margin: 14px 0 6px; }
+  .ob-progress-bar-demo > div { height: 100%; background: linear-gradient(90deg, var(--cyan-dim), var(--cyan)); width: 0%; transition: width .5s cubic-bezier(.4,0,.2,1); }
+  .ob-progress-pct { font-size: 11.5px; color: var(--ink-faint); text-align: right; }
+
+  /* ---------------- Passo: anexar ficheiro (funcional) ---------------- */
+  .ob-dropzone {
+    width: 100%; max-width: 340px; border: 1.5px dashed var(--border); border-radius: 12px;
+    padding: 22px 16px; cursor: pointer; transition: border-color .2s, background .2s;
+  }
+  .ob-dropzone:hover, .ob-dropzone.hover-active { border-color: var(--cyan); background: rgba(34,199,221,0.06); }
+  .ob-dropzone i { font-size: 26px; color: var(--ink-faint); }
+  .ob-dropzone p { font-size: 12px; color: var(--ink-faint); margin: 8px 0 0; }
+  .ob-file-chip {
+    display: none; align-items: center; gap: 10px; background: var(--navy-900); border: 1px solid var(--border);
+    border-radius: 10px; padding: 10px 14px; font-size: 12.5px; margin-top: 12px; text-align: left;
+    animation: obBubbleIn .4s cubic-bezier(.34,1.56,.64,1);
+  }
+  .ob-file-chip.show { display: flex; }
+  .ob-file-chip i { font-size: 18px; color: var(--cyan); }
+  .ob-file-chip .meta { font-size: 10.5px; color: var(--ink-faint); }
+  .ob-sent-tag { margin-left: auto; font-size: 10px; font-weight: 700; color: var(--success); }
+
+  /* ---------------- Passo: notificações (funcional) ---------------- */
+  .ob-notif-demo { display: flex; flex-direction: column; align-items: center; gap: 16px; }
+  .ob-bell-wrap { position: relative; }
+  .ob-bell-btn {
+    background: var(--navy-900); border: 1px solid var(--border); border-radius: 50%; width: 56px; height: 56px;
+    display: flex; align-items: center; justify-content: center; font-size: 22px; cursor: pointer; position: relative;
+    transition: transform .15s, border-color .15s;
+  }
+  .ob-bell-btn:hover { border-color: var(--cyan); }
+  .ob-bell-btn.ring { animation: obRing .5s ease; }
+  @keyframes obRing { 0%,100% { transform: rotate(0); } 20% { transform: rotate(-14deg); } 40% { transform: rotate(11deg); } 60% { transform: rotate(-7deg); } 80% { transform: rotate(4deg); } }
+  .ob-bell-count {
+    position: absolute; top: -4px; right: -4px; background: var(--danger); color: #fff; font-size: 10px; font-weight: 800;
+    border-radius: 999px; min-width: 18px; height: 18px; display: flex; align-items: center; justify-content: center;
+    padding: 0 4px; transform: scale(0); transition: transform .25s cubic-bezier(.34,1.56,.64,1);
+  }
+  .ob-bell-count.show { transform: scale(1); }
+  .ob-notif-list { width: 100%; max-width: 320px; text-align: left; display: flex; flex-direction: column; gap: 6px; min-height: 20px; }
+  .ob-notif-item {
+    background: var(--navy-900); border: 1px solid var(--border); border-radius: 9px; padding: 8px 11px;
+    font-size: 12px; display: flex; gap: 8px; align-items: center;
+    animation: obToastIn .35s cubic-bezier(.34,1.56,.64,1);
+  }
+  @keyframes obToastIn { from { transform: translateY(-8px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+
+  @media (max-width: 480px) {
+    .ob-viewport { padding: 16px 18px 4px; }
+    .ob-actions { padding: 0 18px 22px; }
+    .ob-kanban-live { flex-wrap: wrap; }
+  }
+</style>
+</head>
+<body>
+  <div class="ob-shell">
+    <div class="ob-brand">
+      <img src="/img/unikivi-logo.png" alt="Unikivi" />
+      <b>GPI Track</b>
+    </div>
+
+    <div class="ob-card">
+      <div class="ob-progress-track"><div class="ob-progress-fill" id="ob-progress"></div></div>
+      <div class="ob-topline">
+        <span id="ob-contador">Passo 1 de 9</span>
+        <span id="ob-titulo-mini">Boas-vindas</span>
+      </div>
+
+      <div class="ob-viewport">
+        <div id="ob-stage" class="ob-stage"></div>
+      </div>
+
+      <div class="ob-dots" id="ob-dots"></div>
+
+      <div class="ob-actions">
+        <button class="ob-skip" id="ob-skip">Saltar guia</button>
+        <div style="display:flex;gap:10px">
+          <button class="btn" id="ob-anterior" style="background:transparent;border:1px solid var(--border);color:var(--ink);display:none">← Anterior</button>
+          <button class="btn btn-primary" id="ob-seguinte">Seguinte →</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // ============================================================
+    // Cada passo é uma função que recebe o elemento onde deve
+    // desenhar-se e liga os seus próprios eventos — nada aqui é
+    // apenas decorativo: arrastar, escrever, marcar checkboxes e
+    // anexar um ficheiro funcionam mesmo.
+    // ============================================================
+    const etapas = [
+      {
+        titulo: "Boas-vindas",
+        render(el) {
+          el.innerHTML = `
+            <div class="ob-illustration"><div style="font-size:54px">🎓</div></div>
+            <h2>Bem-vindo(a) ao GPI Track!</h2>
+            <p class="desc">A sua conta foi criada com sucesso. Este guia tem ${etapas.length} passos rápidos —
+            e a partir de agora, sempre que houver algo para experimentar, vai poder mesmo interagir com ele.</p>`;
+        },
+      },
+      {
+        titulo: "Crie o seu primeiro projeto",
+        render(el) {
+          el.innerHTML = `
+            <div class="ob-illustration">
+              <div style="display:flex;align-items:center;gap:10px;background:var(--navy-900);border:1px solid var(--border);border-radius:12px;padding:14px 20px">
+                <i class="bi bi-folder-plus" style="font-size:24px;color:var(--cyan)"></i>
+                <div style="text-align:left">
+                  <div style="font-size:13px;font-weight:700">Novo projeto</div>
+                  <div style="font-size:11px;color:var(--ink-faint)">Dê um nome e comece já a organizar tarefas</div>
+                </div>
+              </div>
+            </div>
+            <h2>1. Crie ou entre num projeto</h2>
+            <p class="desc">Depois deste guia, vai chegar à sua lista de projetos. Clique em "Novo projeto" para
+            começar do zero, ou aceite o convite de um colega para entrar num projeto já existente.</p>`;
+        },
+      },
+      {
+        titulo: "Convide a sua equipa",
+        render(el) {
+          el.innerHTML = `
+            <div class="ob-illustration">
+              <div id="ob-avatares" style="display:flex"></div>
+            </div>
+            <h2>2. Convide a sua equipa</h2>
+            <p class="desc">Adicione colegas pelo e-mail. Cada um aparece com presença ao vivo — vai ver exatamente
+            quem está a ver o projeto consigo, agora mesmo.</p>`;
+          const cores = ["#22C7DD", "#E67E22", "#8E7CC3", "#34C77B"];
+          const iniciais = ["VM", "SF", "AK", "+2"];
+          const cont = el.querySelector("#ob-avatares");
+          iniciais.forEach((ini, i) => {
+            const span = document.createElement("span");
+            span.textContent = ini;
+            span.style.cssText = `width:38px;height:38px;border-radius:50%;background:${cores[i]};display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;color:#06222A;margin-left:${i ? "-10px" : "0"};border:2px solid var(--card);opacity:0;transform:translateY(6px) scale(.8);transition:opacity .35s cubic-bezier(.34,1.56,.64,1) ${i * 0.14}s, transform .35s cubic-bezier(.34,1.56,.64,1) ${i * 0.14}s`;
+            cont.appendChild(span);
+          });
+          requestAnimationFrame(() => requestAnimationFrame(() => {
+            cont.querySelectorAll("span").forEach((s) => { s.style.opacity = "1"; s.style.transform = "translateY(0) scale(1)"; });
+          }));
+        },
+      },
+      {
+        titulo: "Arraste uma tarefa (experimente!)",
+        render(el) {
+          el.innerHTML = `
+            <h2>3. Arraste tarefas entre colunas</h2>
+            <p class="desc">Isto funciona mesmo — arraste o cartão azul da coluna "Por Fazer" até "Concluído" com o rato ou o dedo.</p>
+            <span class="ob-badge-try"><i class="bi bi-hand-index-thumb"></i> Experimente arrastar</span>
+            <div class="ob-illustration" style="margin-top:18px">
+              <div class="ob-kanban-live" id="ob-kanban">
+                <div class="ob-col-live" data-col="0"><div class="t">Por Fazer</div></div>
+                <div class="ob-col-live" data-col="1"><div class="t">Em Curso</div></div>
+                <div class="ob-col-live" data-col="2"><div class="t">Concluído</div></div>
+              </div>
+            </div>
+            <div class="ob-drag-success" id="ob-drag-ok"><i class="bi bi-check-circle-fill"></i> Boa! Foi mesmo isto que aconteceu.</div>`;
+          iniciarDragDemo(el);
+        },
+      },
+      {
+        titulo: "Comente em tempo real",
+        render(el) {
+          el.innerHTML = `
+            <h2>4. Comente e mencione colegas</h2>
+            <p class="desc">Escreva algo e envie — é exactamente assim que os comentários aparecem numa tarefa real, com indicador de "a escrever…" incluído.</p>
+            <span class="ob-badge-try"><i class="bi bi-hand-index-thumb"></i> Escreva uma mensagem abaixo</span>
+            <div class="ob-illustration" style="margin-top:16px">
+              <div class="ob-chat-demo">
+                <div class="ob-chat-feed" id="ob-chat-feed"></div>
+                <div class="ob-typing-row" id="ob-typing-row"><span class="dots"><span></span><span></span><span></span></span> a escrever…</div>
+                <div class="ob-chat-input-row">
+                  <input type="text" id="ob-chat-input" placeholder="Escreva um comentário…" maxlength="80" />
+                  <button id="ob-chat-send"><i class="bi bi-send-fill"></i></button>
+                </div>
+              </div>
+            </div>`;
+          iniciarChatDemo(el);
+        },
+      },
+      {
+        titulo: "Divida tarefas em checklist",
+        render(el) {
+          el.innerHTML = `
+            <h2>5. Divida tarefas numa checklist</h2>
+            <p class="desc">Marque os itens abaixo e veja a barra de progresso a atualizar-se sozinha — tal como numa tarefa real.</p>
+            <span class="ob-badge-try"><i class="bi bi-hand-index-thumb"></i> Marque os itens</span>
+            <div class="ob-illustration" style="margin-top:16px">
+              <div class="ob-checklist-demo">
+                <label class="row"><input type="checkbox" data-i="0" /><span>Levantamento de requisitos</span></label>
+                <label class="row"><input type="checkbox" data-i="1" /><span>Modelagem da base de dados</span></label>
+                <label class="row"><input type="checkbox" data-i="2" /><span>Desenvolvimento do protótipo</span></label>
+                <label class="row"><input type="checkbox" data-i="3" /><span>Testes com utilizadores</span></label>
+                <div class="ob-progress-bar-demo"><div id="ob-checklist-bar"></div></div>
+                <div class="ob-progress-pct" id="ob-checklist-pct">0% concluído</div>
+              </div>
+            </div>`;
+          iniciarChecklistDemo(el);
+        },
+      },
+      {
+        titulo: "Envie um ficheiro ao responsável",
+        render(el) {
+          el.innerHTML = `
+            <h2>6. Envie ficheiros ao responsável</h2>
+            <p class="desc">Arraste um ficheiro do seu computador para a zona abaixo, ou clique para escolher um — o responsável do projeto seria notificado no mesmo instante.</p>
+            <span class="ob-badge-try"><i class="bi bi-hand-index-thumb"></i> Arraste ou clique para escolher</span>
+            <div class="ob-illustration" style="margin-top:16px;flex-direction:column">
+              <div class="ob-dropzone" id="ob-dropzone">
+                <i class="bi bi-cloud-arrow-up"></i>
+                <p>Arraste um ficheiro para aqui, ou clique para escolher</p>
+              </div>
+              <input type="file" id="ob-file-input" style="display:none" />
+              <div class="ob-file-chip" id="ob-file-chip">
+                <i class="bi bi-file-earmark-text"></i>
+                <div>
+                  <div id="ob-file-name" style="font-weight:600"></div>
+                  <div class="meta" id="ob-file-meta"></div>
+                </div>
+                <span class="ob-sent-tag">✓ Enviado</span>
+              </div>
+            </div>`;
+          iniciarDropzoneDemo(el);
+        },
+      },
+      {
+        titulo: "Nunca perca uma atualização",
+        render(el) {
+          el.innerHTML = `
+            <h2>7. Notificações em tempo real</h2>
+            <p class="desc">Clique no sino para simular a chegada de novidades — atribuições, comentários, convites e anúncios chegam assim, na hora.</p>
+            <span class="ob-badge-try"><i class="bi bi-hand-index-thumb"></i> Clique no sino</span>
+            <div class="ob-illustration" style="margin-top:10px">
+              <div class="ob-notif-demo">
+                <div class="ob-bell-wrap">
+                  <button class="ob-bell-btn" id="ob-bell">🔔<span class="ob-bell-count" id="ob-bell-count">0</span></button>
+                </div>
+                <div class="ob-notif-list" id="ob-notif-list"></div>
+              </div>
+            </div>`;
+          iniciarNotifDemo(el);
+        },
+      },
+      {
+        titulo: "Administração e relatórios",
+        render(el) {
+          el.innerHTML = `
+            <div class="ob-illustration">
+              <div style="display:flex;gap:10px">
+                <div style="background:var(--navy-900);border:1px solid var(--border);border-radius:10px;padding:12px 16px;text-align:center">
+                  <div style="font-size:20px;font-weight:800;color:var(--cyan)">24</div>
+                  <div style="font-size:10px;color:var(--ink-faint)">projetos ativos</div>
+                </div>
+                <div style="background:var(--navy-900);border:1px solid var(--border);border-radius:10px;padding:12px 16px;text-align:center">
+                  <div style="font-size:20px;font-weight:800;color:var(--success)">92%</div>
+                  <div style="font-size:10px;color:var(--ink-faint)">tarefas no prazo</div>
+                </div>
+              </div>
+            </div>
+            <h2>8. Administração &amp; relatórios</h2>
+            <p class="desc">Se for administrador, tem acesso a um painel com estatísticas da plataforma,
+            envio de anúncios à equipa, e relatórios exportáveis em PDF e CSV.</p>`;
+        },
+      },
+      {
+        titulo: "Tudo pronto",
+        render(el) {
+          el.innerHTML = `
+            <div class="ob-illustration"><div style="font-size:54px">🚀</div></div>
+            <h2>Tudo pronto — vamos começar!</h2>
+            <p class="desc">Já experimentou o essencial do GPI Track. Clique abaixo para ir para os seus projetos.</p>`;
+        },
+      },
+    ];
+
+    // ---------------- Passo 3: arrastar (pointer events, funciona com rato e toque) ----------------
+    function iniciarDragDemo(root) {
+      const board = root.querySelector("#ob-kanban");
+      const cols = [...board.querySelectorAll(".ob-col-live")];
+      const sucesso = root.querySelector("#ob-drag-ok");
+
+      function criarCartao() {
+        const card = document.createElement("div");
+        card.className = "ob-drag-card";
+        card.textContent = "Rever proposta de layout";
+        cols[0].appendChild(card);
+        ligarArrasto(card);
+      }
+
+      function ligarArrasto(card) {
+        let offsetX = 0, offsetY = 0, dragging = false;
+
+        card.addEventListener("pointerdown", (e) => {
+          dragging = true;
+          card.classList.add("dragging");
+          card.setPointerCapture(e.pointerId);
+          const r = card.getBoundingClientRect();
+          offsetX = e.clientX - r.left;
+          offsetY = e.clientY - r.top;
+          card.style.position = "fixed";
+          card.style.width = r.width + "px";
+          card.style.left = r.left + "px";
+          card.style.top = r.top + "px";
+        });
+
+        card.addEventListener("pointermove", (e) => {
+          if (!dragging) return;
+          card.style.left = (e.clientX - offsetX) + "px";
+          card.style.top = (e.clientY - offsetY) + "px";
+          cols.forEach((c) => {
+            const r = c.getBoundingClientRect();
+            const dentro = e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
+            c.classList.toggle("hover-target", dentro);
+          });
+        });
+
+        function soltar(e) {
+          if (!dragging) return;
+          dragging = false;
+          card.classList.remove("dragging");
+          card.classList.add("snap-back");
+
+          const destino = cols.find((c) => c.classList.contains("hover-target"));
+          cols.forEach((c) => c.classList.remove("hover-target"));
+
+          card.style.position = "";
+          card.style.width = "";
+          card.style.left = "";
+          card.style.top = "";
+
+          if (destino) {
+            destino.appendChild(card);
+            if (destino.dataset.col === "2") {
+              sucesso.classList.add("show");
+            }
+          }
+          setTimeout(() => card.classList.remove("snap-back"), 350);
+        }
+
+        card.addEventListener("pointerup", soltar);
+        card.addEventListener("pointercancel", soltar);
+      }
+
+      criarCartao();
+    }
+
+    // ---------------- Passo 4: comentário com indicador "a escrever" real ----------------
+    function iniciarChatDemo(root) {
+      const input = root.querySelector("#ob-chat-input");
+      const feed = root.querySelector("#ob-chat-feed");
+      const typingRow = root.querySelector("#ob-typing-row");
+      const btnEnviar = root.querySelector("#ob-chat-send");
+      let timeoutTyping = null;
+
+      input.addEventListener("input", () => {
+        if (input.value.trim()) {
+          typingRow.classList.add("show");
+          clearTimeout(timeoutTyping);
+          timeoutTyping = setTimeout(() => typingRow.classList.remove("show"), 1200);
+        } else {
+          typingRow.classList.remove("show");
+        }
+      });
+
+      function enviar() {
+        const texto = input.value.trim();
+        if (!texto) return;
+        clearTimeout(timeoutTyping);
+        typingRow.classList.remove("show");
+        const bolha = document.createElement("div");
+        bolha.className = "ob-chat-bubble";
+        bolha.textContent = texto;
+        feed.appendChild(bolha);
+        feed.scrollTop = feed.scrollHeight;
+        input.value = "";
+        input.focus();
+      }
+
+      btnEnviar.addEventListener("click", enviar);
+      input.addEventListener("keydown", (e) => { if (e.key === "Enter") enviar(); });
+    }
+
+    // ---------------- Passo 5: checklist com barra de progresso real ----------------
+    function iniciarChecklistDemo(root) {
+      const caixas = [...root.querySelectorAll('.ob-checklist-demo input[type=checkbox]')];
+      const barra = root.querySelector("#ob-checklist-bar");
+      const pct = root.querySelector("#ob-checklist-pct");
+
+      function atualizar() {
+        const total = caixas.length;
+        const feitas = caixas.filter((c) => c.checked).length;
+        const percentagem = Math.round((feitas / total) * 100);
+        barra.style.width = percentagem + "%";
+        pct.textContent = `${percentagem}% concluído (${feitas}/${total})`;
+      }
+
+      caixas.forEach((c) => {
+        c.addEventListener("change", () => {
+          c.closest(".row").classList.toggle("done", c.checked);
+          atualizar();
+        });
+      });
+      atualizar();
+    }
+
+    // ---------------- Passo 6: anexo real (aceita um ficheiro verdadeiro) ----------------
+    function iniciarDropzoneDemo(root) {
+      const zona = root.querySelector("#ob-dropzone");
+      const inputFile = root.querySelector("#ob-file-input");
+      const chip = root.querySelector("#ob-file-chip");
+      const nomeEl = root.querySelector("#ob-file-name");
+      const metaEl = root.querySelector("#ob-file-meta");
+
+      function mostrarFicheiro(file) {
+        if (!file) return;
+        nomeEl.textContent = file.name;
+        const kb = file.size / 1024;
+        metaEl.textContent = kb > 1024 ? `${(kb / 1024).toFixed(1)} MB` : `${kb.toFixed(0)} KB`;
+        chip.classList.add("show");
+      }
+
+      zona.addEventListener("click", () => inputFile.click());
+      inputFile.addEventListener("change", () => mostrarFicheiro(inputFile.files[0]));
+
+      ["dragenter", "dragover"].forEach((ev) =>
+        zona.addEventListener(ev, (e) => { e.preventDefault(); zona.classList.add("hover-active"); })
+      );
+      ["dragleave", "drop"].forEach((ev) =>
+        zona.addEventListener(ev, (e) => { e.preventDefault(); zona.classList.remove("hover-active"); })
+      );
+      zona.addEventListener("drop", (e) => {
+        const file = e.dataTransfer.files[0];
+        mostrarFicheiro(file);
+      });
+    }
+
+    // ---------------- Passo 7: notificações reais (sino + lista) ----------------
+    function iniciarNotifDemo(root) {
+      const bell = root.querySelector("#ob-bell");
+      const count = root.querySelector("#ob-bell-count");
+      const lista = root.querySelector("#ob-notif-list");
+      const eventos = [
+        { icon: "📌", texto: "Foi-lhe atribuída a tarefa \"Rever layout\"." },
+        { icon: "💬", texto: "Ana comentou na sua tarefa." },
+        { icon: "📎", texto: "Recebeu um ficheiro em \"Modelagem da BD\"." },
+        { icon: "📢", texto: "Novo anúncio da administração." },
+      ];
+      let i = 0, total = 0;
+
+      bell.addEventListener("click", () => {
+        if (i >= eventos.length) return;
+        bell.classList.remove("ring");
+        void bell.offsetWidth;
+        bell.classList.add("ring");
+
+        const ev = eventos[i++];
+        total++;
+        count.textContent = total;
+        count.classList.add("show");
+
+        const item = document.createElement("div");
+        item.className = "ob-notif-item";
+        item.innerHTML = `<span>${ev.icon}</span><span>${ev.texto}</span>`;
+        lista.prepend(item);
+      });
+    }
+
+    // ---------------- Motor de navegação entre passos (com transição suave) ----------------
+    let atual = 0;
+    const stageEl = document.getElementById("ob-stage");
+    const dotsEl = document.getElementById("ob-dots");
+    const btnSeguinte = document.getElementById("ob-seguinte");
+    const btnAnterior = document.getElementById("ob-anterior");
+    const progressoEl = document.getElementById("ob-progress");
+    const contadorEl = document.getElementById("ob-contador");
+    const tituloMiniEl = document.getElementById("ob-titulo-mini");
+
+    dotsEl.innerHTML = etapas.map((_, i) => `<span data-i="${i}"></span>`).join("");
+    dotsEl.querySelectorAll("span").forEach((dot, i) => {
+      dot.addEventListener("click", () => { if (i <= atual) ir(i); });
+    });
+
+    function desenhar() {
+      etapas[atual].render(stageEl);
+      progressoEl.style.width = `${((atual + 1) / etapas.length) * 100}%`;
+      contadorEl.textContent = `Passo ${atual + 1} de ${etapas.length}`;
+      tituloMiniEl.textContent = etapas[atual].titulo;
+      [...dotsEl.children].forEach((d, i) => {
+        d.classList.toggle("active", i === atual);
+        d.classList.toggle("done", i < atual);
+      });
+      btnAnterior.style.display = atual === 0 ? "none" : "inline-block";
+      btnSeguinte.innerHTML = atual === etapas.length - 1 ? "Começar a usar →" : "Seguinte →";
+    }
+
+    function ir(destino) {
+      if (destino === atual) return;
+      const direcaoFrente = destino > atual;
+      stageEl.classList.add(direcaoFrente ? "leaving-next" : "leaving-prev");
+      setTimeout(() => {
+        atual = destino;
+        desenhar();
+        stageEl.classList.remove("leaving-next", "leaving-prev");
+        stageEl.classList.add(direcaoFrente ? "entering-next" : "entering-prev");
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          stageEl.classList.remove("entering-next", "entering-prev");
+        }));
+      }, 220);
+    }
+
+    function irParaApp() {
+      sessionStorage.setItem("gpitrack_onboarding_visto", "1");
+      window.location.href = "/projetos.html";
+    }
+
+    btnSeguinte.addEventListener("click", () => {
+      if (atual === etapas.length - 1) { irParaApp(); return; }
+      ir(atual + 1);
+    });
+    btnAnterior.addEventListener("click", () => ir(Math.max(0, atual - 1)));
+    document.getElementById("ob-skip").addEventListener("click", irParaApp);
+
+    desenhar();
+  </script>
+</body>
+</html>

@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="pt" data-bs-theme="dark">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Quadro do projeto — GPI Track</title>
+<link rel="stylesheet" href="/css/styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <img src="/img/unikivi-logo.png" alt="Unikivi" class="brand-mark" style="background:#fff;object-fit:contain;border-radius:50%;padding:2px" />
+        <div class="brand-name">GPI Track</div>
+      </div>
+      <div class="nav-section-label">Navegação</div>
+      <div style="padding:10px 4px;cursor:pointer;color:var(--ink-dim);font-size:13px" onclick="location.href='/projetos.html'">← Voltar aos projetos</div>
+      <div id="bloco-espaco-gestao" style="display:none;padding:9px 10px;border-radius:8px;cursor:pointer;font-size:13px;color:var(--ink-dim);border:1px solid var(--border);margin-bottom:6px" onclick="location.href='/workspace.html?voltar='+projectId">🧭 Espaço de gestão</div>
+      <div id="nav-admin" style="display:none;margin:6px 0 4px">
+        <div style="padding:9px 10px;border-radius:8px;cursor:pointer;font-size:13px;color:var(--ink-dim);border:1px solid var(--border)" onclick="location.href='/admin.html?voltar='+projectId">🛠️ Administração</div>
+      </div>
+
+      <div class="nav-section-label">Membros do projeto</div>
+      <div id="lista-membros" style="display:flex;flex-direction:column;gap:8px;margin-bottom:6px"></div>
+      <button class="add-task-btn" onclick="abrirModalConvite()">+ Convidar membro</button>
+
+      <div class="nav-section-label">Atividade recente</div>
+      <div id="lista-atividade" style="font-size:12.5px;color:var(--ink-faint);display:flex;flex-direction:column;gap:10px"></div>
+
+      <div class="user-chip" id="user-chip"></div>
+    </aside>
+
+    <main class="main">
+      <div class="topbar">
+        <div>
+          <div style="display:flex;align-items:center;gap:10px">
+            <h1 id="nome-projeto">A carregar…</h1>
+            <span id="btn-editar-projeto" style="display:none;cursor:pointer;color:var(--ink-faint);font-size:16px" title="Editar projeto">✏️</span>
+            <span id="btn-eliminar-projeto" style="display:none;cursor:pointer;color:var(--ink-faint);font-size:16px" title="Eliminar projeto">🗑️</span>
+          </div>
+          <div class="sub" id="desc-projeto"></div>
+        </div>
+        <div style="display:flex;align-items:center;gap:14px">
+          <div class="presence-stack" id="presenca"></div>
+          <div id="ancora-sino"></div>
+        </div>
+      </div>
+
+      <div class="view-switcher" id="view-switcher">
+        <button class="view-tab active" data-view="quadro">🗂️ Quadro</button>
+        <button class="view-tab" data-view="lista">📋 Lista</button>
+        <button class="view-tab" data-view="calendario">📅 Calendário</button>
+        <button class="view-tab" data-view="conversa">💬 Conversa da equipa</button>
+        <button class="view-tab" data-view="automacoes">⚡ Automações</button>
+      </div>
+
+      <!-- Vista: Quadro Kanban -->
+      <div id="view-quadro">
+        <div style="display:flex;gap:10px;margin-bottom:18px;flex-wrap:wrap;align-items:center">
+          <input type="text" id="campo-pesquisa" placeholder="Pesquisar tarefas…" style="flex:1;min-width:200px;max-width:320px;padding:9px 13px;border-radius:9px;border:1px solid var(--border);background:var(--navy-900);color:var(--ink);font-family:inherit;font-size:13.5px" />
+          <select id="filtro-responsavel" style="width:auto;padding:9px 13px;font-size:13px"><option value="">Todos os responsáveis</option></select>
+          <select id="filtro-etiqueta" style="width:auto;padding:9px 13px;font-size:13px"><option value="">Todas as etiquetas</option></select>
+        </div>
+        <div class="board-columns" id="board-columns"></div>
+      </div>
+
+      <!-- Vista: Lista -->
+      <div id="view-lista" style="display:none">
+        <table class="admin-table">
+          <thead><tr><th>Tarefa</th><th>Coluna</th><th>Prioridade</th><th>Responsável</th><th>Prazo</th></tr></thead>
+          <tbody id="tbody-lista-tarefas"></tbody>
+        </table>
+      </div>
+
+      <!-- Vista: Calendário -->
+      <div id="view-calendario" style="display:none">
+        <div class="cal-toolbar">
+          <button class="mini-btn" id="cal-anterior">←</button>
+          <div id="cal-titulo-mes" style="font-weight:700;font-size:15px;min-width:160px;text-align:center"></div>
+          <button class="mini-btn" id="cal-seguinte">→</button>
+        </div>
+        <div class="cal-grid" id="cal-cabecalho"></div>
+        <div class="cal-grid" id="cal-corpo"></div>
+      </div>
+
+      <!-- Vista: Conversa da equipa -->
+      <div id="view-conversa" style="display:none">
+        <div class="channel-box">
+          <div class="channel-feed" id="channel-feed"></div>
+          <div id="channel-audio-preview" style="display:none;align-items:center;gap:10px;padding:8px 4px;border-top:1px solid var(--border)"></div>
+          <form id="form-channel" class="channel-input-row">
+            <button type="button" class="channel-icon-btn" id="btn-channel-file" title="Anexar ficheiro">📎</button>
+            <button type="button" class="channel-icon-btn" id="btn-channel-image" title="Enviar imagem ou GIF">🖼️</button>
+            <button type="button" class="channel-icon-btn" id="btn-channel-audio" title="Gravar mensagem de áudio">🎤</button>
+            <input type="file" id="channel-file-input" style="display:none" />
+            <input type="file" id="channel-image-input" accept="image/*,image/gif" style="display:none" />
+            <input type="text" id="channel-input" placeholder="Escreva uma mensagem para a equipa…" maxlength="1000" autocomplete="off" />
+            <button class="btn btn-primary" style="width:auto" type="submit">Enviar</button>
+          </form>
+        </div>
+      </div>
+
+      <!-- Vista: Automações -->
+      <div id="view-automacoes" style="display:none">
+        <div class="report-card" id="card-nova-automacao" style="margin-bottom:24px">
+          <h3>⚡ Nova automação</h3>
+          <p>Quando uma tarefa entrar na coluna escolhida, a ação selecionada acontece automaticamente.</p>
+          <div class="field" style="margin-top:14px">
+            <label>Nome da automação</label>
+            <input type="text" id="auto-nome" placeholder="Ex.: Avisar quando chega a Revisão" maxlength="150" />
+          </div>
+          <div class="field">
+            <label>Quando uma tarefa entrar em…</label>
+            <select id="auto-coluna"></select>
+          </div>
+          <div class="field">
+            <label>Ação</label>
+            <select id="auto-acao">
+              <option value="notificar">🔔 Notificar alguém</option>
+              <option value="atribuir">👤 Atribuir automaticamente a alguém</option>
+              <option value="definir_prioridade">🎯 Mudar a prioridade da tarefa</option>
+              <option value="concluir_checklist">✔️ Marcar toda a checklist como concluída</option>
+            </select>
+          </div>
+          <div class="field" id="campo-auto-notificar">
+            <label>Notificar</label>
+            <select id="auto-notificar"><option value="">O responsável do projeto</option></select>
+          </div>
+          <div class="field" id="campo-auto-atribuir" style="display:none">
+            <label>Atribuir a</label>
+            <select id="auto-atribuir"></select>
+          </div>
+          <div class="field" id="campo-auto-prioridade" style="display:none">
+            <label>Nova prioridade</label>
+            <select id="auto-prioridade">
+              <option value="alta">🔴 Alta</option>
+              <option value="media">🟡 Média</option>
+              <option value="baixa">🟢 Baixa</option>
+            </select>
+          </div>
+          <div class="report-actions">
+            <button class="btn btn-primary" style="width:auto" onclick="criarAutomacao()">Criar automação</button>
+          </div>
+        </div>
+        <div class="nav-section-label">Automações ativas</div>
+        <div id="lista-automacoes"></div>
+      </div>
+    </main>
+  </div>
+
+  <!-- Modal: editar projeto -->
+  <div class="overlay" id="overlay-editar-projeto">
+    <div class="gpi-modal" style="position:relative;max-width:420px">
+      <span class="modal-close" onclick="fecharModalEditarProjeto()">&times;</span>
+      <h3>Editar projeto</h3>
+      <form id="form-editar-projeto">
+        <div class="field">
+          <label>Nome</label>
+          <input type="text" id="ep-nome" required />
+        </div>
+        <div class="field">
+          <label>Descrição</label>
+          <textarea id="ep-desc" rows="3"></textarea>
+        </div>
+        <button class="btn btn-primary" type="submit">Guardar alterações</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: convidar membro -->
+  <div class="overlay" id="overlay-convite">
+    <div class="gpi-modal" style="position:relative;max-width:440px">
+      <span class="modal-close" onclick="fecharModalConvite()">&times;</span>
+      <h3>Convidar membro</h3>
+      <div class="sub" style="margin-bottom:14px">Pesquise por nome ou e-mail. A pessoa recebe um convite e decide se aceita entrar.</div>
+      <div class="error-box" id="erro-convite"></div>
+
+      <div style="display:flex;gap:8px;margin-bottom:12px">
+        <input type="text" id="conv-pesquisa" placeholder="Pesquisar por nome ou e-mail…" style="flex:1;padding:9px 12px;border-radius:9px;border:1px solid var(--border);background:var(--navy-900);color:var(--ink);font-family:inherit;font-size:13.5px" />
+        <select id="conv-ordenar" style="width:auto;padding:9px 10px;font-size:12.5px">
+          <option value="nome_asc">Nome A–Z</option>
+          <option value="nome_desc">Nome Z–A</option>
+          <option value="recente">Mais recentes</option>
+        </select>
+      </div>
+
+      <div id="conv-resultados" style="max-height:300px;overflow-y:auto;display:flex;flex-direction:column;gap:6px"></div>
+    </div>
+  </div>
+
+  <!-- Modal: nova/editar coluna -->
+  <div class="overlay" id="overlay-coluna">
+    <div class="gpi-modal" style="position:relative;max-width:420px">
+      <span class="modal-close" onclick="fecharModalColuna()">&times;</span>
+      <h3 id="titulo-modal-coluna">Nova coluna</h3>
+      <div class="sub" style="margin-bottom:14px">Escolha um nome sugerido ou escreva o seu próprio.</div>
+      <div class="error-box" id="erro-coluna"></div>
+
+      <div style="display:flex;flex-wrap:wrap;gap:7px;margin-bottom:14px" id="sugestoes-nome-coluna"></div>
+
+      <form id="form-coluna">
+        <div class="field">
+          <label>Nome da coluna</label>
+          <input type="text" id="coluna-nome" required maxlength="60" placeholder="Ex.: Em Teste, Bloqueado, Backlog…" />
+        </div>
+        <div class="field" style="display:flex;align-items:center;gap:9px;background:var(--navy-900);border:1px solid var(--border);border-radius:9px;padding:11px 13px">
+          <input type="checkbox" id="coluna-is-done" style="width:16px;height:16px;accent-color:var(--cyan);cursor:pointer" />
+          <label for="coluna-is-done" style="margin:0;cursor:pointer;font-size:12.5px;color:var(--ink-dim)">
+            Considerar esta coluna como <b>"tarefa concluída"</b> — usada nos relatórios e gráficos<br/>
+            <span style="font-size:11px;color:var(--ink-faint)">Só pode haver uma por projeto; marcar esta desmarca a anterior.</span>
+          </label>
+        </div>
+        <div class="field" style="display:flex;align-items:center;gap:9px;background:var(--navy-900);border:1px solid var(--border);border-radius:9px;padding:11px 13px">
+          <input type="checkbox" id="coluna-restricted" style="width:16px;height:16px;accent-color:var(--cyan);cursor:pointer" />
+          <label for="coluna-restricted" style="margin:0;cursor:pointer;font-size:12.5px;color:var(--ink-dim)">
+            🔒 Restringir esta coluna a <b>responsáveis e administradores</b><br/>
+            <span style="font-size:11px;color:var(--ink-faint)">Ex.: "Em Revisão" — os restantes membros nem sequer a veem no quadro.</span>
+          </label>
+        </div>
+        <button class="btn btn-primary" type="submit" id="btn-guardar-coluna" style="margin-top:6px">Criar coluna</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: tarefas de um dia (vista de calendário) -->
+  <div class="overlay" id="overlay-dia">
+    <div class="gpi-modal" style="position:relative;max-width:440px">
+      <span class="modal-close" onclick="fecharModalDia()">&times;</span>
+      <h3 id="titulo-modal-dia">Tarefas do dia</h3>
+      <div id="lista-tarefas-dia" style="margin-top:12px;display:flex;flex-direction:column;gap:8px"></div>
+    </div>
+  </div>
+
+  <!-- Modal: nova tarefa -->
+  <div class="overlay" id="overlay-tarefa">
+    <div class="gpi-modal" style="position:relative">
+      <span class="modal-close" onclick="fecharModalTarefa()">&times;</span>
+      <h3>Nova tarefa</h3>
+      <form id="form-nova-tarefa">
+        <input type="hidden" id="nt-coluna" />
+        <div class="field">
+          <label>Título</label>
+          <input type="text" id="nt-titulo" required placeholder="Ex: Implementar autenticação JWT" />
+        </div>
+        <div class="field">
+          <label>Prioridade</label>
+          <select id="nt-prioridade">
+            <option value="baixa">Baixa</option>
+            <option value="media" selected>Média</option>
+            <option value="alta">Alta</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Responsável</label>
+          <select id="nt-responsavel"><option value="">Sem responsável</option></select>
+        </div>
+        <div class="field">
+          <label>Prazo</label>
+          <input type="date" id="nt-prazo" />
+        </div>
+        <div class="field">
+          <label>Etiquetas</label>
+          <div id="nt-etiquetas" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+        </div>
+        <div class="field" id="campo-nt-checklist">
+          <label>Checklist (opcional)</label>
+          <div id="nt-checklist-lista" style="display:flex;flex-direction:column;gap:6px;margin-bottom:8px"></div>
+          <div style="display:flex;gap:8px">
+            <input type="text" id="nt-checklist-input" placeholder="Adicionar item…" style="flex:1;padding:8px 11px;border-radius:8px;border:1px solid var(--border);background:var(--navy-900);color:var(--ink);font-family:inherit;font-size:12.5px" />
+            <button type="button" class="mini-btn" onclick="adicionarItemChecklistNovaTarefa()">+ Item</button>
+          </div>
+        </div>
+        <button class="btn btn-primary" type="submit">Criar tarefa</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: detalhe da tarefa + comentários em tempo real -->
+  <div class="overlay" id="overlay-detalhe">
+    <div class="gpi-modal" style="position:relative;max-width:540px">
+      <span class="modal-close" onclick="fecharModalDetalhe()">&times;</span>
+
+      <!-- Vista só-leitura (membros sem permissão de edição) -->
+      <div id="det-vista-leitura">
+        <h3 id="det-titulo"></h3>
+        <div class="sub" id="det-meta" style="margin-bottom:12px"></div>
+      </div>
+
+      <!-- Formulário editável (criador da tarefa, dono do projeto ou administrador) -->
+      <form id="form-editar-tarefa" style="display:none;margin-bottom:6px" autocomplete="off">
+        <div class="mb-3">
+          <label class="form-label">Título</label>
+          <input type="text" id="et-titulo" class="form-control" required autocomplete="off" spellcheck="false" />
+        </div>
+        <div class="mb-3">
+          <label class="form-label">Descrição</label>
+          <textarea id="et-descricao" class="form-control" rows="2" placeholder="Sem descrição" autocomplete="off" spellcheck="false"></textarea>
+        </div>
+        <div class="row g-2 mb-3">
+          <div class="col">
+            <label class="form-label">Prioridade</label>
+            <select id="et-prioridade" class="form-select">
+              <option value="baixa">Baixa</option>
+              <option value="media">Média</option>
+              <option value="alta">Alta</option>
+            </select>
+          </div>
+          <div class="col">
+            <label class="form-label">Responsável</label>
+            <select id="et-responsavel" class="form-select"><option value="">Sem responsável</option></select>
+          </div>
+        </div>
+        <div class="mb-3">
+          <label class="form-label">Prazo</label>
+          <input type="date" id="et-prazo" class="form-control" autocomplete="off" />
+        </div>
+        <div style="display:flex;gap:8px;margin-bottom:6px">
+          <button class="btn btn-primary" type="submit" style="flex:1">Guardar alterações</button>
+          <button type="button" class="btn btn-ghost" id="btn-eliminar-tarefa" style="width:auto;padding:10px 16px;color:var(--danger);border-color:var(--danger)">Eliminar</button>
+        </div>
+      </form>
+
+      <div id="det-etiquetas" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:18px"></div>
+
+      <div class="nav-section-label" style="margin-top:0">Responsáveis extra da tarefa</div>
+      <div id="det-responsaveis-extra" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px"></div>
+      <div id="det-add-responsavel" style="display:none;gap:8px;margin-bottom:18px">
+        <select id="det-select-responsavel" style="flex:1;padding:8px 11px;border-radius:8px;border:1px solid var(--border);background:var(--navy-900);color:var(--ink);font-family:inherit;font-size:12.5px"></select>
+        <button type="button" class="mini-btn" onclick="adicionarResponsavelExtra()">+ Adicionar</button>
+      </div>
+
+      <div class="nav-section-label" style="margin-top:0">Checklist</div>
+      <div id="det-checklist-progresso" style="font-size:12px;color:var(--ink-faint);margin-bottom:8px"></div>
+      <div id="lista-checklist" style="margin-bottom:10px"></div>
+      <form id="form-checklist" style="display:flex;gap:8px;margin-bottom:22px">
+        <input type="text" id="input-checklist" placeholder="Novo item da checklist…" style="flex:1;padding:9px 12px;border-radius:9px;border:1px solid var(--border);background:var(--navy-900);color:var(--ink);font-family:inherit;font-size:13px" />
+        <button class="btn btn-ghost" style="width:auto;padding:9px 14px" type="submit">Adicionar</button>
+      </form>
+
+      <div class="nav-section-label" style="margin-top:0">Anexos enviados ao responsável</div>
+      <div id="lista-anexos" style="margin-bottom:10px"></div>
+      <form id="form-anexo" style="display:flex;gap:8px;margin-bottom:22px;align-items:center">
+        <input type="file" id="input-anexo" style="flex:1;font-size:12.5px;color:var(--ink-dim)" />
+        <button class="btn btn-primary" id="btn-enviar-anexo" style="width:auto;padding:9px 14px" type="submit">📎 Enviar ao responsável</button>
+      </form>
+
+      <div class="nav-section-label" style="margin-top:0">Comentários em tempo real</div>
+      <div id="lista-comentarios" style="max-height:220px;overflow-y:auto;margin-bottom:10px"></div>
+      <div class="typing-indicator" id="indicador-digitando"></div>
+      <form id="form-comentario" style="display:flex;gap:8px;margin-top:8px">
+        <input type="text" id="input-comentario" placeholder="Escreva um comentário…" style="flex:1;padding:10px 12px;border-radius:9px;border:1px solid var(--border);background:var(--navy-900);color:var(--ink);font-family:inherit" />
+        <button class="btn btn-primary" style="width:auto;padding:10px 16px" type="submit">Enviar</button>
+      </form>
+    </div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+  <script src="/js/api.js"></script>
+  <script src="/js/notifications.js"></script>
+  <script src="/js/board.js"></script>
+</body>
+</html>

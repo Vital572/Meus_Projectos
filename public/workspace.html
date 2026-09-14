@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="pt" data-bs-theme="dark">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Espaço de Gestão — GPI Track</title>
+<link rel="icon" href="/img/unikivi-logo.png" />
+<link rel="stylesheet" href="/css/styles.css" />
+<style>
+  .chart-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 18px; margin: 24px 0; }
+  .chart-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px 20px; box-shadow: var(--shadow); }
+  .chart-card h3 { font-size: 13.5px; margin: 0 0 14px; color: var(--ink-dim); display: flex; align-items: baseline; gap: 8px; }
+  .chart-card .chart-sub { font-size: 11px; color: var(--ink-faint); font-weight: 400; }
+  @media (max-width: 900px) { .chart-grid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <img src="/img/unikivi-logo.png" alt="Unikivi" class="brand-mark" style="background:#fff;object-fit:contain;border-radius:50%;padding:2px" />
+        <div class="brand-name">GPI Track</div>
+      </div>
+      <div class="nav-section-label">Navegação</div>
+      <div id="link-voltar" style="padding:10px 4px;cursor:pointer;color:var(--ink-dim);font-size:13px" onclick="location.href='/projetos.html'">← Voltar aos projetos</div>
+
+      <div class="nav-section-label">O meu espaço de gestão</div>
+      <div class="admin-nav-item active" data-tab="visao-geral">🧭 Visão geral</div>
+      <div class="admin-nav-item" data-tab="equipas">👥 Equipas</div>
+      <div class="admin-nav-item" data-tab="projetos">🗂️ Projetos</div>
+      <div class="admin-nav-item" data-tab="tarefas">✅ Minhas tarefas</div>
+      <div class="admin-nav-item" data-tab="membros">🙋 Membros</div>
+      <div class="admin-nav-item" data-tab="relatorios">📄 Relatórios</div>
+      <div class="admin-nav-item" data-tab="reunioes">🗓️ Reuniões</div>
+      <div class="admin-nav-item" data-tab="feedback">💬 Feedback</div>
+
+      <div id="nav-admin" style="display:none;margin-top:14px">
+        <div class="nav-section-label">Sistema</div>
+        <div style="padding:9px 10px;border-radius:8px;cursor:pointer;font-size:13px;color:var(--ink-dim);border:1px solid var(--border)" onclick="location.href='/admin.html'">🛠️ Administração da plataforma</div>
+      </div>
+
+      <div class="user-chip" id="user-chip"></div>
+    </aside>
+
+    <main class="main">
+      <div class="topbar">
+        <div>
+          <h1>Espaço de Gestão</h1>
+          <div class="sub" id="sub-espaco">A gerir as suas equipas, projetos e tarefas — apenas o que lhe pertence.</div>
+        </div>
+        <div id="ancora-sino"></div>
+      </div>
+
+      <!-- Visão geral -->
+      <section id="tab-visao-geral" class="admin-tab">
+        <div class="stats-grid" id="grid-visao-geral"></div>
+        <div class="nav-section-label" style="margin-top:8px">Próximas reuniões</div>
+        <div id="visao-geral-reunioes"></div>
+      </section>
+
+      <!-- Equipas -->
+      <section id="tab-equipas" class="admin-tab" style="display:none">
+        <div class="sub" style="margin-bottom:16px">Só as equipas ligadas aos projetos de que faz parte — não todas as equipas da plataforma.</div>
+        <input type="text" id="pesquisa-equipas" class="busca-lista" placeholder="Pesquisar equipas…" />
+        <div class="project-grid" id="lista-equipas"></div>
+      </section>
+
+      <!-- Projetos -->
+      <section id="tab-projetos" class="admin-tab" style="display:none">
+        <input type="text" id="pesquisa-projetos" class="busca-lista" placeholder="Pesquisar projetos…" />
+        <table class="admin-table">
+          <thead><tr><th>Projeto</th><th>Descrição</th><th>Tarefas</th><th>Criado em</th><th></th></tr></thead>
+          <tbody id="tbody-meus-projetos"></tbody>
+        </table>
+      </section>
+
+      <!-- Minhas tarefas -->
+      <section id="tab-tarefas" class="admin-tab" style="display:none">
+        <input type="text" id="pesquisa-tarefas" class="busca-lista" placeholder="Pesquisar tarefas…" />
+        <table class="admin-table">
+          <thead><tr><th>Tarefa</th><th>Projeto</th><th>Coluna</th><th>Prioridade</th><th>Prazo</th></tr></thead>
+          <tbody id="tbody-minhas-tarefas"></tbody>
+        </table>
+      </section>
+
+      <!-- Membros -->
+      <section id="tab-membros" class="admin-tab" style="display:none">
+        <input type="text" id="pesquisa-membros" class="busca-lista" placeholder="Pesquisar membros…" />
+        <div id="lista-membros-por-projeto"></div>
+      </section>
+
+      <!-- Relatórios -->
+      <section id="tab-relatorios" class="admin-tab" style="display:none">
+        <div class="stats-grid" id="grid-relatorio-pessoal" style="margin-bottom:24px"></div>
+
+        <div class="chart-grid">
+          <div class="chart-card">
+            <h3>Tarefas criadas por dia <span class="chart-sub">últimos 14 dias · os seus projetos</span></h3>
+            <canvas id="chart-tarefas-dia" height="150"></canvas>
+          </div>
+          <div class="chart-card">
+            <h3>Tarefas por prioridade</h3>
+            <canvas id="chart-prioridade" height="150"></canvas>
+          </div>
+          <div class="chart-card">
+            <h3>Tarefas por coluna do quadro</h3>
+            <canvas id="chart-colunas" height="180"></canvas>
+          </div>
+          <div class="chart-card">
+            <h3>Projetos com mais tarefas</h3>
+            <canvas id="chart-projetos" height="180"></canvas>
+          </div>
+        </div>
+
+        <div class="report-card">
+          <h3>📄 Exportar as minhas tarefas</h3>
+          <p>Descarrega um ficheiro CSV com todas as tarefas atribuídas a si, em todos os seus projetos.</p>
+          <div class="report-actions">
+            <a class="btn btn-primary" style="width:auto;text-decoration:none" id="link-exportar-csv" href="#" download>⬇️ Descarregar CSV</a>
+          </div>
+        </div>
+      </section>
+
+      <!-- Reuniões -->
+      <section id="tab-reunioes" class="admin-tab" style="display:none">
+        <div class="report-card" style="margin-bottom:28px">
+          <h3>🗓️ Marcar reunião</h3>
+          <p>Todos os membros do projeto escolhido são participantes automáticos e recebem uma notificação instantânea.</p>
+
+          <div class="field" style="margin-top:16px">
+            <label>Projeto</label>
+            <select id="reuniao-projeto"></select>
+          </div>
+          <div class="field">
+            <label>Título</label>
+            <input type="text" id="reuniao-titulo" placeholder="Ex.: Ponto semanal da equipa" maxlength="200" />
+          </div>
+          <div class="field">
+            <label>Data e hora</label>
+            <input type="datetime-local" id="reuniao-data" />
+          </div>
+          <div class="field">
+            <label>Local ou link da chamada (opcional)</label>
+            <input type="text" id="reuniao-local" placeholder="Ex.: Google Meet, sala 2, etc." maxlength="200" />
+          </div>
+          <div class="field">
+            <label>Notas (opcional)</label>
+            <textarea id="reuniao-descricao" rows="2" placeholder="Pauta, objetivo…" maxlength="500"></textarea>
+          </div>
+
+          <div class="report-actions">
+            <button class="btn btn-primary" style="width:auto" onclick="marcarReuniao()">Marcar reunião</button>
+          </div>
+        </div>
+
+        <input type="text" id="pesquisa-reunioes" class="busca-lista" placeholder="Pesquisar reuniões…" />
+        <div class="nav-section-label">Próximas</div>
+        <div id="lista-reunioes-futuras" style="margin-bottom:24px"></div>
+        <div class="nav-section-label">Já realizadas</div>
+        <div id="lista-reunioes-passadas"></div>
+      </section>
+
+      <!-- Feedback -->
+      <section id="tab-feedback" class="admin-tab" style="display:none">
+        <div class="report-card">
+          <h3>💬 Enviar feedback</h3>
+          <p>Encontrou um problema, ou tem uma sugestão sobre a plataforma? A mensagem fica registada e é vista na Administração.</p>
+          <div class="field" style="margin-top:14px">
+            <label>Mensagem</label>
+            <textarea id="feedback-mensagem" rows="4" maxlength="3000" placeholder="Escreva aqui o seu feedback…"></textarea>
+          </div>
+          <div class="report-actions">
+            <button class="btn btn-primary" style="width:auto" onclick="enviarFeedbackWorkspace()">Enviar feedback</button>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <script src="/js/api.js"></script>
+  <script src="/js/notifications.js"></script>
+  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+  <script src="/js/workspace.js"></script>
+</body>
+</html>

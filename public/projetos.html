@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="pt" data-bs-theme="dark">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Os meus projetos — GPI Track</title>
+<link rel="stylesheet" href="/css/styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <img src="/img/unikivi-logo.png" alt="Unikivi" class="brand-mark" style="background:#fff;object-fit:contain;border-radius:50%;padding:2px" />
+        <div class="brand-name">GPI Track</div>
+      </div>
+      <div class="nav-section-label">Espaço de trabalho</div>
+      <div id="lista-lateral"></div>
+      <div style="margin-top:14px;display:none" id="bloco-espaco-gestao">
+        <div style="padding:9px 10px;border-radius:8px;cursor:pointer;font-size:13px;color:var(--ink-dim);border:1px solid var(--border)" onclick="location.href='/workspace.html'">🧭 Espaço de gestão</div>
+      </div>
+      <div id="nav-admin" style="display:none;margin-top:10px">
+        <div class="nav-section-label">Sistema</div>
+        <div style="padding:9px 10px;border-radius:8px;cursor:pointer;font-size:13px;color:var(--ink-dim);border:1px solid var(--border)" onclick="location.href='/admin.html'">🛠️ Administração</div>
+      </div>
+      <div class="user-chip" id="user-chip"></div>
+    </aside>
+
+    <main class="main">
+      <div class="topbar">
+        <div>
+          <h1>Os meus projetos</h1>
+          <div class="sub">Selecione um projeto para abrir o quadro em tempo real.</div>
+        </div>
+        <div id="ancora-sino"></div>
+      </div>
+      <div id="bloco-convites" style="display:none;margin-bottom:26px"></div>
+      <div id="bloco-aprovar-convites" style="display:none;margin-bottom:26px"></div>
+      <div class="project-grid" id="grid-projetos"></div>
+    </main>
+  </div>
+
+  <div class="overlay" id="overlay-novo">
+    <div class="gpi-modal" style="position:relative">
+      <span class="modal-close" onclick="fecharModal()">&times;</span>
+      <h3>Novo projeto</h3>
+      <form id="form-novo-projeto">
+        <div class="field">
+          <label>Nome do projeto</label>
+          <input type="text" id="np-nome" placeholder="Ex: CurriculumIA — Módulo de exportação" required />
+        </div>
+        <div class="field">
+          <label>Descrição (opcional)</label>
+          <textarea id="np-desc" rows="3" placeholder="Breve descrição do objetivo do projeto"></textarea>
+        </div>
+        <button class="btn btn-primary" type="submit">Criar projeto</button>
+      </form>
+    </div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+  <script src="/js/api.js"></script>
+  <script src="/js/notifications.js"></script>
+  <script>
+    let eu = null;
+
+    async function iniciar() {
+      if (!sessao.obterToken()) { window.location.href = "/entrar.html"; return; }
+
+      try {
+        const { user } = await api.get("/api/auth/eu");
+        eu = user;
+      } catch {
+        sessao.limpar();
+        window.location.href = "/entrar.html";
+        return;
+      }
+
+      document.getElementById("user-chip").innerHTML = `
+        <div class="avatar" style="background:#22C7DD">${iniciais(eu.name)}</div>
+        <div class="who">${eu.name}<small>${eu.email}</small></div>
+        <div class="logout-link" onclick="sair()">Saír</div>
+      `;
+
+      if (eu.role === "admin") document.getElementById("nav-admin").style.display = "block";
+
+      const socket = io({ auth: { token: sessao.obterToken() } });
+      iniciarNotificacoes(socket);
+
+      await carregarConvites();
+      await carregarPedidosParaAprovar();
+      await carregarProjetos();
+    }
+
+    async function carregarPedidosParaAprovar() {
+      const pedidos = await api.get("/api/projects/convites/para-aprovar");
+      const bloco = document.getElementById("bloco-aprovar-convites");
+      if (pedidos.length === 0) { bloco.style.display = "none"; return; }
+      bloco.style.display = "block";
+      bloco.innerHTML = `
+        <div class="nav-section-label" style="margin-top:0">Pedidos de convite para aprovar</div>
+        ${pedidos.map((p) => `
+          <div class="project-card" style="cursor:default;border-color:var(--warn);margin-bottom:12px">
+            <h3>🙋 ${p.utilizador_nome}</h3>
+            <p>${p.utilizador_email} — proposto por ${p.proposto_por || "—"} para o projeto "${p.projeto_nome}".</p>
+            <div style="display:flex;gap:10px">
+              <button class="btn btn-primary" style="width:auto" onclick="responderPedidoAprovacao('${p.projeto_id}', '${p.utilizador_id}', true)">Aprovar</button>
+              <button class="btn" style="width:auto;background:transparent;border:1px solid var(--border);color:var(--ink)" onclick="responderPedidoAprovacao('${p.projeto_id}', '${p.utilizador_id}', false)">Rejeitar</button>
+            </div>
+          </div>
+        `).join("")}
+      `;
+    }
+
+    async function responderPedidoAprovacao(projetoId, utilizadorId, aprovar) {
+      try {
+        await api.post(`/api/projects/${projetoId}/membros/${utilizadorId}/aprovar-convite`, { aprovar });
+        mostrarToast(aprovar ? "Convite aprovado e enviado ao convidado." : "Pedido de convite rejeitado.");
+        await carregarPedidosParaAprovar();
+      } catch (err) {
+        mostrarToast(err.message);
+      }
+    }
+
+    async function carregarConvites() {
+      const convites = await api.get("/api/projects/convites/meus");
+      const bloco = document.getElementById("bloco-convites");
+      if (convites.length === 0) { bloco.style.display = "none"; return; }
+      bloco.style.display = "block";
+      bloco.innerHTML = `
+        <div class="nav-section-label" style="margin-top:0">Convites pendentes</div>
+        ${convites.map((c) => `
+          <div class="project-card" style="cursor:default;border-color:var(--cyan-dim);margin-bottom:12px">
+            <h3>✉️ ${c.projeto_nome}</h3>
+            <p>${c.descricao || "Sem descrição."}</p>
+            <div class="meta" style="margin-bottom:14px">
+              <span>Equipa: ${c.equipa_nome || "—"}</span>
+              <span>${c.total_membros} membro${c.total_membros === 1 ? "" : "s"} · ${c.total_tarefas} tarefa${c.total_tarefas === 1 ? "" : "s"}</span>
+            </div>
+            <div style="font-size:11.5px;color:var(--ink-faint);margin-bottom:14px">Convidado(a) por ${c.convidado_por || "—"}</div>
+            <div style="display:flex;gap:10px">
+              <button class="btn btn-primary" style="width:auto" onclick="responderConvite('${c.projeto_id}', true)">Aceitar</button>
+              <button class="btn" style="width:auto;background:transparent;border:1px solid var(--border);color:var(--ink)" onclick="responderConvite('${c.projeto_id}', false)">Recusar</button>
+            </div>
+          </div>
+        `).join("")}
+      `;
+    }
+
+    async function responderConvite(projetoId, aceitar) {
+      try {
+        await api.post(`/api/projects/${projetoId}/convite/${aceitar ? "aceitar" : "recusar"}`);
+        mostrarToast(aceitar ? "Convite aceite! Já faz parte do projeto." : "Convite recusado.");
+        await carregarConvites();
+        await carregarProjetos();
+      } catch (err) {
+        mostrarToast(err.message);
+      }
+    }
+
+    async function carregarProjetos() {
+      const projetos = await api.get("/api/projects");
+      const grid = document.getElementById("grid-projetos");
+      const lateral = document.getElementById("lista-lateral");
+
+      const souResponsavelDeAlgum = projetos.some((p) => p.meu_papel === "responsavel");
+      document.getElementById("bloco-espaco-gestao").style.display =
+        (eu.role === "admin" || souResponsavelDeAlgum) ? "block" : "none";
+
+      grid.innerHTML = "";
+      lateral.innerHTML = "";
+
+      projetos.forEach((p) => {
+        const souResponsavel = eu.role === "admin" || p.meu_papel === "responsavel";
+        const acao = souResponsavel
+          ? `<span data-del-proj="${p.id}" data-nome="${p.name.replace(/"/g, "&quot;")}" style="cursor:pointer;color:var(--ink-faint)" title="Eliminar projeto">🗑️</span>`
+          : `<span data-sair-proj="${p.id}" style="cursor:pointer;color:var(--ink-faint)" title="Sair do projeto">🚪</span>`;
+        grid.innerHTML += `
+          <div class="project-card" onclick="abrirProjeto('${p.id}')">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start">
+              <h3>${p.name}</h3>
+              <span onclick="event.stopPropagation()">${acao}</span>
+            </div>
+            <p>${p.description || "Sem descrição."}</p>
+            <div class="meta">
+              <span>${p.total_tarefas} tarefa(s)</span>
+              <span>${souResponsavel ? "Responsável" : "Membro"}</span>
+            </div>
+          </div>
+        `;
+        lateral.innerHTML += `<div class="new-project-card" style="padding:10px;margin-bottom:8px;text-align:left;display:block;cursor:pointer" onclick="abrirProjeto('${p.id}')">${p.name}</div>`;
+      });
+
+      grid.innerHTML += `
+        <div class="new-project-card" onclick="abrirModal()">
+          <div class="plus">+</div>
+          <div>Novo projeto</div>
+        </div>
+      `;
+
+      grid.querySelectorAll("[data-del-proj]").forEach((el) => {
+        el.addEventListener("click", async () => {
+          if (!confirm(`Eliminar definitivamente o projeto "${el.dataset.nome}"? Esta ação não pode ser revertida.`)) return;
+          try {
+            await api.del(`/api/projects/${el.dataset.delProj}`);
+            await carregarProjetos();
+          } catch (err) {
+            mostrarToast(err.message);
+          }
+        });
+      });
+      grid.querySelectorAll("[data-sair-proj]").forEach((el) => {
+        el.addEventListener("click", async () => {
+          if (!confirm("Sair deste projeto?")) return;
+          try {
+            await api.del(`/api/projects/${el.dataset.sairProj}/membros/${eu.id}`);
+            await carregarProjetos();
+          } catch (err) {
+            mostrarToast(err.message);
+          }
+        });
+      });
+    }
+
+    function abrirProjeto(id) {
+      window.location.href = `/board.html?projeto=${id}`;
+    }
+
+    function abrirModal() { document.getElementById("overlay-novo").classList.add("open"); }
+    function fecharModal() { document.getElementById("overlay-novo").classList.remove("open"); }
+
+    document.getElementById("form-novo-projeto").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const projeto = await api.post("/api/projects", {
+        name: document.getElementById("np-nome").value,
+        description: document.getElementById("np-desc").value,
+      });
+      fecharModal();
+      abrirProjeto(projeto.id);
+    });
+
+    async function sair() {
+      await api.post("/api/auth/logout");
+      sessao.limpar();
+      window.location.href = "/entrar.html";
+    }
+
+    iniciar();
+  </script>
+</body>
+</html>

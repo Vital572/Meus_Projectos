@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="pt" data-bs-theme="dark">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Administração — GPI Track</title>
+<link rel="stylesheet" href="/css/styles.css" />
+<style>
+  .chart-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 18px; margin-top: 24px; }
+  .chart-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px 20px; box-shadow: var(--shadow); }
+  .chart-card h3 { font-size: 13.5px; margin: 0 0 14px; color: var(--ink-dim); display: flex; align-items: baseline; gap: 8px; }
+  .chart-card .chart-sub { font-size: 11px; color: var(--ink-faint); font-weight: 400; }
+  @media (max-width: 900px) { .chart-grid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <img src="/img/unikivi-logo.png" alt="Unikivi" class="brand-mark" style="background:#fff;object-fit:contain;border-radius:50%;padding:2px" />
+        <div class="brand-name">GPI Track</div>
+      </div>
+      <div class="nav-section-label">Navegação</div>
+      <div id="link-voltar" style="padding:10px 4px;cursor:pointer;color:var(--ink-dim);font-size:13px" onclick="location.href='/projetos.html'">← Voltar aos projetos</div>
+
+      <div class="nav-section-label">Administração</div>
+      <div class="admin-nav-item active" data-tab="visao-geral">📊 Visão geral</div>
+      <div class="admin-nav-item" data-tab="utilizadores">👤 Utilizadores</div>
+      <div class="admin-nav-item" data-tab="online">🟢 Online agora</div>
+      <div class="admin-nav-item" data-tab="projetos">🗂️ Projetos</div>
+      <div class="admin-nav-item" data-tab="notificacoes">🔔 Notificações</div>
+      <div class="admin-nav-item" data-tab="mensagens">📢 Mensagens</div>
+      <div class="admin-nav-item" data-tab="relatorios">📄 Relatórios</div>
+      <div class="admin-nav-item" data-tab="feedback">💬 Feedback</div>
+
+      <div class="user-chip" id="user-chip"></div>
+    </aside>
+
+    <main class="main">
+      <div class="topbar">
+        <div>
+          <h1>Administração</h1>
+          <div class="sub">Gestão de utilizadores e visão geral da plataforma GPI Track.</div>
+        </div>
+        <div id="ancora-sino"></div>
+      </div>
+
+      <!-- Visão geral -->
+      <section id="tab-visao-geral" class="admin-tab">
+        <div class="stats-grid" id="grid-estatisticas"></div>
+
+        <div class="chart-grid">
+          <div class="chart-card">
+            <h3>Tarefas criadas por dia <span class="chart-sub">últimos 14 dias</span></h3>
+            <canvas id="chart-tarefas-dia" height="150"></canvas>
+          </div>
+          <div class="chart-card">
+            <h3>Novos registos por dia <span class="chart-sub">últimos 14 dias</span></h3>
+            <canvas id="chart-registos-dia" height="150"></canvas>
+          </div>
+          <div class="chart-card">
+            <h3>Tarefas por prioridade</h3>
+            <canvas id="chart-prioridade" height="180"></canvas>
+          </div>
+          <div class="chart-card">
+            <h3>Tarefas por coluna do quadro</h3>
+            <canvas id="chart-colunas" height="180"></canvas>
+          </div>
+          <div class="chart-card" style="grid-column: 1 / -1">
+            <h3>Projetos com mais tarefas</h3>
+            <canvas id="chart-projetos" height="120"></canvas>
+          </div>
+        </div>
+      </section>
+
+      <!-- Utilizadores -->
+      <section id="tab-utilizadores" class="admin-tab" style="display:none">
+        <input type="text" id="pesquisa-utilizadores" class="busca-lista" placeholder="Pesquisar utilizadores…" />
+        <table class="admin-table">
+          <thead>
+            <tr><th>Utilizador</th><th>Papel</th><th>Estado</th><th>Última atividade</th><th>Registado em</th><th>Ações</th></tr>
+          </thead>
+          <tbody id="tbody-utilizadores"></tbody>
+        </table>
+      </section>
+
+      <!-- Online agora -->
+      <section id="tab-online" class="admin-tab" style="display:none">
+        <div class="sub" style="margin-bottom:16px">Atualizado em tempo real via Socket.IO — não é necessário recarregar a página.</div>
+        <input type="text" id="pesquisa-online" class="busca-lista" placeholder="Pesquisar…" />
+        <div id="lista-online" class="project-grid"></div>
+      </section>
+
+      <!-- Projetos -->
+      <section id="tab-projetos" class="admin-tab" style="display:none">
+        <input type="text" id="pesquisa-projetos-admin" class="busca-lista" placeholder="Pesquisar projetos…" />
+        <table class="admin-table">
+          <thead>
+            <tr><th>Projeto</th><th>Equipa</th><th>Criado por</th><th>Membros</th><th>Tarefas</th><th>Criado em</th></tr>
+          </thead>
+          <tbody id="tbody-projetos"></tbody>
+        </table>
+      </section>
+
+      <!-- Notificações -->
+      <section id="tab-notificacoes" class="admin-tab" style="display:none">
+        <div class="stats-grid" id="grid-estatisticas-notificacoes" style="margin-bottom:24px"></div>
+
+        <div class="nav-section-label">Notificações recentes (últimas 100)</div>
+        <input type="text" id="pesquisa-notificacoes" class="busca-lista" placeholder="Pesquisar notificações…" />
+        <table class="admin-table">
+          <thead>
+            <tr><th>Tipo</th><th>Conteúdo</th><th>Destinatário</th><th>Projeto</th><th>Estado</th><th>Data</th></tr>
+          </thead>
+          <tbody id="tbody-notificacoes"></tbody>
+        </table>
+      </section>
+
+      <!-- Mensagens -->
+      <section id="tab-mensagens" class="admin-tab" style="display:none">
+        <div class="report-card" style="margin-bottom:28px">
+          <h3>📢 Enviar anúncio</h3>
+          <p>Envia uma mensagem em tempo real (via notificação) a toda a plataforma, a um projeto específico ou a um único utilizador.</p>
+
+          <div class="field" style="margin-top:16px">
+            <label>Destino</label>
+            <select id="mensagem-destino">
+              <option value="todos">Todos os utilizadores</option>
+              <option value="projeto">Um projeto específico</option>
+              <option value="utilizador">Um utilizador específico</option>
+            </select>
+          </div>
+
+          <div class="field" id="campo-mensagem-projeto" style="display:none">
+            <label>Projeto</label>
+            <select id="mensagem-projeto"></select>
+          </div>
+
+          <div class="field" id="campo-mensagem-utilizador" style="display:none">
+            <label>Utilizador</label>
+            <select id="mensagem-utilizador"></select>
+          </div>
+
+          <div class="field">
+            <label>Mensagem</label>
+            <textarea id="mensagem-conteudo" rows="3" placeholder="Escreva aqui o anúncio…" maxlength="500"></textarea>
+          </div>
+
+          <div class="report-actions">
+            <button class="btn btn-primary" style="width:auto" onclick="enviarMensagem()">Enviar</button>
+          </div>
+        </div>
+
+        <div class="nav-section-label">Mensagens enviadas</div>
+        <input type="text" id="pesquisa-mensagens" class="busca-lista" placeholder="Pesquisar mensagens…" />
+        <table class="admin-table">
+          <thead>
+            <tr><th>Mensagem</th><th>Destino</th><th>Destinatários</th><th>Enviado por</th><th>Data</th></tr>
+          </thead>
+          <tbody id="tbody-mensagens"></tbody>
+        </table>
+      </section>
+
+      <!-- Relatórios -->
+      <section id="tab-relatorios" class="admin-tab" style="display:none">
+        <div class="stats-grid" id="grid-estatisticas-rel" style="margin-bottom:24px"></div>
+
+        <div class="chart-grid" style="margin-bottom:28px">
+          <div class="chart-card">
+            <h3>Tarefas criadas por dia <span class="chart-sub">últimos 14 dias</span></h3>
+            <canvas id="chart-tarefas-dia-rel" height="150"></canvas>
+          </div>
+          <div class="chart-card">
+            <h3>Novos registos por dia <span class="chart-sub">últimos 14 dias</span></h3>
+            <canvas id="chart-registos-dia-rel" height="150"></canvas>
+          </div>
+          <div class="chart-card">
+            <h3>Tarefas por prioridade</h3>
+            <canvas id="chart-prioridade-rel" height="180"></canvas>
+          </div>
+          <div class="chart-card">
+            <h3>Tarefas por coluna do quadro</h3>
+            <canvas id="chart-colunas-rel" height="180"></canvas>
+          </div>
+          <div class="chart-card" style="grid-column: 1 / -1">
+            <h3>Projetos com mais tarefas</h3>
+            <canvas id="chart-projetos-rel" height="120"></canvas>
+          </div>
+        </div>
+
+        <div class="report-cards">
+          <div class="report-card">
+            <h3>📊 Relatório Geral</h3>
+            <p>Resumo consolidado: projetos, equipas e utilizadores com os principais números da plataforma.</p>
+            <div class="report-actions">
+              <button class="btn btn-primary" style="width:auto" onclick="gerarPDF('geral')">Ver / Imprimir PDF</button>
+              <button class="btn btn-ghost" style="width:auto" onclick="exportarCSV('projetos')">Exportar CSV</button>
+            </div>
+          </div>
+
+          <div class="report-card">
+            <h3>🗂️ Projetos e Tarefas</h3>
+            <p>Lista detalhada de tarefas por projeto: coluna, prioridade, responsável, etiquetas e progresso da checklist.</p>
+            <div class="field" style="margin:12px 0">
+              <label>Filtrar por projeto (opcional)</label>
+              <select id="filtro-relatorio-projeto"><option value="">Todos os projetos</option></select>
+            </div>
+            <div class="report-actions">
+              <button class="btn btn-primary" style="width:auto" onclick="gerarPDF('projetos')">Ver / Imprimir PDF</button>
+              <button class="btn btn-ghost" style="width:auto" onclick="exportarCSV('tarefas')">Exportar CSV</button>
+            </div>
+          </div>
+
+          <div class="report-card">
+            <h3>👤 Utilizadores</h3>
+            <p>Atividade por conta: tarefas atribuídas e criadas, comentários e projetos em que participa.</p>
+            <div class="report-actions">
+              <button class="btn btn-primary" style="width:auto" onclick="gerarPDF('utilizadores')">Ver / Imprimir PDF</button>
+              <button class="btn btn-ghost" style="width:auto" onclick="exportarCSV('utilizadores')">Exportar CSV</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="nav-section-label" style="margin-top:32px">Pré-visualização — Projetos</div>
+        <table class="admin-table" style="margin-bottom:28px">
+          <thead>
+            <tr><th>Projeto</th><th>Equipa</th><th>Criado por</th><th>Membros</th><th>Tarefas</th><th>Criado em</th></tr>
+          </thead>
+          <tbody id="tbody-preview-projetos"></tbody>
+        </table>
+
+        <div class="nav-section-label">Pré-visualização — Tarefas por projeto</div>
+        <div id="preview-tarefas-projetos"></div>
+
+        <div class="nav-section-label" style="margin-top:28px">Pré-visualização — Utilizadores</div>
+        <table class="admin-table">
+          <thead>
+            <tr><th>Nome</th><th>E-mail</th><th>Papel</th><th>Projetos</th><th>Tarefas atribuídas</th><th>Tarefas criadas</th><th>Comentários</th></tr>
+          </thead>
+          <tbody id="tbody-preview-utilizadores"></tbody>
+        </table>
+      </section>
+
+      <!-- Feedback -->
+      <section id="tab-feedback" class="admin-tab" style="display:none">
+        <div class="sub" style="margin-bottom:16px">Mensagens enviadas pela página inicial pública e pelo Espaço de Gestão dos utilizadores.</div>
+        <input type="text" id="pesquisa-feedback" class="busca-lista" placeholder="Pesquisar feedback…" />
+        <div id="lista-feedback"></div>
+      </section>
+    </main>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+  <script src="/js/api.js"></script>
+  <script src="/js/notifications.js"></script>
+  <script src="/js/admin.js"></script>
+</body>
+</html>

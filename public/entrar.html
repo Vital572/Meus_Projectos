@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="pt" data-bs-theme="dark">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>GPI Track — Gestão de Projetos em Equipa</title>
+<link rel="stylesheet" href="/css/styles.css" />
+</head>
+<body>
+  <div class="auth-shell">
+    <div class="auth-hero">
+      <a href="/" style="display:inline-flex;align-items:center;gap:10px;text-decoration:none;color:var(--ink);margin-bottom:22px">
+        <img src="/img/unikivi-logo.png" alt="Unikivi" style="width:36px;height:36px;border-radius:50%;background:#fff;padding:2px" />
+        <b style="font-size:14.5px">GPI Track</b>
+      </a>
+      <div class="eyebrow">GPI · Uíge, Angola</div>
+      <h1>O progresso da sua equipa,<br/>a acontecer ao vivo.</h1>
+      <p>Protótipo académico de ferramenta de gestão de projetos colaborativa,
+         desenvolvido para o estudo de acompanhamento de equipas em regime de
+         home office. Quadro Kanban, comentários e presença da equipa
+         sincronizados em tempo real via WebSockets.</p>
+      <div class="pulse-row">
+        <span class="pulse-dot"></span>
+        <span>Sincronização em tempo real ativa</span>
+      </div>
+    </div>
+
+    <div class="auth-panel">
+      <div class="auth-card">
+        <div class="tabs">
+          <div class="tab-btn active" data-tab="login">Entrar</div>
+          <div class="tab-btn" data-tab="registo">Criar conta</div>
+        </div>
+
+        <div id="painel-login">
+          <h2>Bem-vindo de volta</h2>
+          <div class="sub">Entre para ver o quadro da sua equipa.</div>
+          <div class="error-box" id="erro-login"></div>
+          <form id="form-login">
+            <div class="field">
+              <label>E-mail</label>
+              <input type="email" id="login-email" placeholder="voce@equipa.ao" required />
+            </div>
+            <div class="field">
+              <label>Password</label>
+              <input type="password" id="login-password" placeholder="••••••••" required />
+            </div>
+            <button class="btn btn-primary" type="submit">Entrar</button>
+          </form>
+          <div class="hint">Conta de demonstração: vital@ukv.ao / 123456</div>
+        </div>
+
+        <div id="painel-registo" style="display:none">
+          <h2>Criar a sua conta</h2>
+          <div class="sub">Comece a acompanhar o seu projeto em minutos.</div>
+          <div class="error-box" id="erro-registo"></div>
+          <form id="form-registo">
+            <div class="field">
+              <label>Nome completo</label>
+              <input type="text" id="reg-nome" placeholder="O seu nome" required />
+            </div>
+            <div class="field">
+              <label>E-mail</label>
+              <input type="email" id="reg-email" placeholder="voce@equipa.ao" required />
+            </div>
+            <div class="field">
+              <label>Password</label>
+              <input type="password" id="reg-password" placeholder="Mínimo 6 caracteres" minlength="6" required />
+            </div>
+            <button class="btn btn-primary" type="submit">Criar conta</button>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+  <script src="/js/api.js"></script>
+  <script>
+    document.querySelectorAll(".tab-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll(".tab-btn").forEach((b) => b.classList.remove("active"));
+        btn.classList.add("active");
+        const tab = btn.dataset.tab;
+        document.getElementById("painel-login").style.display = tab === "login" ? "block" : "none";
+        document.getElementById("painel-registo").style.display = tab === "registo" ? "block" : "none";
+      });
+    });
+
+    if (new URLSearchParams(window.location.search).get("criar") === "1") {
+      document.querySelector('.tab-btn[data-tab="registo"]').click();
+    }
+
+    document.getElementById("form-login").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const erroBox = document.getElementById("erro-login");
+      erroBox.style.display = "none";
+      try {
+        const { token } = await api.post("/api/auth/login", {
+          email: document.getElementById("login-email").value,
+          password: document.getElementById("login-password").value,
+        });
+        sessao.guardarToken(token);
+        window.location.href = "/projetos.html";
+      } catch (err) {
+        erroBox.textContent = err.message;
+        erroBox.style.display = "block";
+      }
+    });
+
+    document.getElementById("form-registo").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const erroBox = document.getElementById("erro-registo");
+      erroBox.style.display = "none";
+      try {
+        const { token } = await api.post("/api/auth/registar", {
+          name: document.getElementById("reg-nome").value,
+          email: document.getElementById("reg-email").value,
+          password: document.getElementById("reg-password").value,
+        });
+        sessao.guardarToken(token);
+        window.location.href = "/onboarding.html";
+      } catch (err) {
+        erroBox.textContent = err.message;
+        erroBox.style.display = "block";
+      }
+    });
+  </script>
+</body>
+</html>

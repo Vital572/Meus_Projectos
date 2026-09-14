@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="pt" data-bs-theme="dark">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>GPI Track — Gestão de Projetos em Equipa em Tempo Real</title>
+<meta name="description" content="Protótipo académico (Universidade Kimpa Vita) de ferramenta colaborativa de gestão de projetos para equipas em regime de Home Office, inspirado em Slack, Asana, ClickUp, Monday.com e Smartsheet." />
+<link rel="icon" href="/img/unikivi-logo.png" />
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" />
+<link rel="stylesheet" href="/css/styles.css" />
+<link rel="stylesheet" href="/css/landing.css" />
+</head>
+<body>
+
+  <header class="lp-header" id="lp-header"></header>
+
+  <!-- Hero -->
+  <section class="lp-hero">
+    <div>
+      <div class="lp-eyebrow">🎓 Protótipo académico · Uíge, Angola</div>
+      <h1>O trabalho da sua equipa, <span>sincronizado ao vivo</span> — mesmo em home office.</h1>
+      <p class="lead">
+        O GPI Track junta, num único lugar, o melhor das ferramentas de gestão de projetos
+        colaborativa que estudámos — quadros, comunicação em equipa, ficheiros e relatórios —
+        para equipas que trabalham à distância acompanharem o progresso em tempo real.
+      </p>
+      <div class="lp-hero-actions">
+        <a href="/entrar.html?criar=1" class="btn btn-primary">Criar a minha conta</a>
+        <a href="/funcionalidades.html" class="btn" style="background:transparent;border:1px solid var(--border);color:var(--ink)">Ver funcionalidades →</a>
+      </div>
+      <div class="lp-hero-stats">
+        <div><b>5</b><span>ferramentas estudadas</span></div>
+        <div><b>100%</b><span>tempo real (WebSockets)</span></div>
+        <div><b>1</b><span>protótipo, código aberto</span></div>
+      </div>
+    </div>
+
+    <div class="lp-mockup">
+      <div class="lp-mockup-bar"><span></span><span></span><span></span></div>
+      <div class="lp-mockup-cols">
+        <div class="lp-mockup-col">
+          <div class="lp-mockup-col-title">Por Fazer</div>
+          <div class="lp-mockup-card">Design da homepage<div class="bar"></div></div>
+          <div class="lp-mockup-card b">Migrar base de dados<div class="bar" style="width:35%"></div></div>
+        </div>
+        <div class="lp-mockup-col">
+          <div class="lp-mockup-col-title">Em Curso</div>
+          <div class="lp-mockup-card c">Autenticação JWT<div class="bar" style="width:80%"></div></div>
+        </div>
+        <div class="lp-mockup-col">
+          <div class="lp-mockup-col-title">Concluído</div>
+          <div class="lp-mockup-card c">Modelagem da BD<div class="bar" style="width:100%"></div></div>
+        </div>
+      </div>
+      <div class="lp-mockup-float"><span class="pulse-dot"></span> 3 pessoas a ver agora</div>
+    </div>
+  </section>
+
+  <!-- Atalhos para as páginas dedicadas -->
+  <section class="lp-section">
+    <div class="lp-section-head">
+      <span class="lp-eyebrow">🧭 Explorar</span>
+      <h2>Saiba mais sobre o GPI Track</h2>
+    </div>
+    <div class="lp-services-grid">
+      <a href="/funcionalidades.html" class="lp-service-card" style="text-decoration:none;color:inherit;display:block">
+        <span class="icon">⚙️</span>
+        <h3>Funcionalidades</h3>
+        <p>O melhor de cinco ferramentas, num só protótipo.</p>
+      </a>
+      <a href="/exemplos.html" class="lp-service-card" style="text-decoration:none;color:inherit;display:block">
+        <span class="icon">📁</span>
+        <h3>Exemplos de projetos</h3>
+        <p>Veja o tipo de trabalho que a plataforma ajuda a acompanhar.</p>
+      </a>
+      <a href="/servicos.html" class="lp-service-card" style="text-decoration:none;color:inherit;display:block">
+        <span class="icon">🧩</span>
+        <h3>Serviços</h3>
+        <p>O que a plataforma oferece à sua equipa.</p>
+      </a>
+      <a href="/sobre.html" class="lp-service-card" style="text-decoration:none;color:inherit;display:block">
+        <span class="icon">🎓</span>
+        <h3>Sobre o projeto</h3>
+        <p>O trabalho de conclusão de curso por trás do GPI Track.</p>
+      </a>
+    </div>
+  </section>
+
+  <!-- Feedback -->
+  <section class="lp-section" id="feedback">
+    <div class="lp-section-head">
+      <span class="lp-eyebrow">💬 A sua opinião</span>
+      <h2>Ajude-nos a melhorar o GPI Track</h2>
+      <p>Encontrou um problema, ou tem uma sugestão? Escreva aqui — a mensagem fica registada e é vista pela equipa do projeto.</p>
+    </div>
+    <form id="form-feedback-home" style="max-width:560px;margin:0 auto;display:flex;flex-direction:column;gap:14px">
+      <div style="display:flex;gap:14px;flex-wrap:wrap">
+        <input type="text" id="fb-nome" placeholder="O seu nome (opcional)" style="flex:1;min-width:200px;padding:12px 14px;border-radius:9px;border:1px solid var(--border);background:var(--navy-900);color:var(--ink);font-family:inherit;font-size:13.5px" />
+        <input type="email" id="fb-email" placeholder="O seu e-mail (opcional)" style="flex:1;min-width:200px;padding:12px 14px;border-radius:9px;border:1px solid var(--border);background:var(--navy-900);color:var(--ink);font-family:inherit;font-size:13.5px" />
+      </div>
+      <textarea id="fb-mensagem" required maxlength="3000" rows="4" placeholder="Escreva aqui o seu feedback…" style="padding:12px 14px;border-radius:9px;border:1px solid var(--border);background:var(--navy-900);color:var(--ink);font-family:inherit;font-size:13.5px;resize:vertical"></textarea>
+      <button class="btn btn-primary" type="submit" style="width:auto;align-self:center;padding:12px 26px">Enviar feedback</button>
+      <div id="fb-home-sucesso" style="display:none;text-align:center;color:var(--success);font-size:13px">✓ Obrigado! O seu feedback foi enviado.</div>
+      <div id="fb-home-erro" style="display:none;text-align:center;color:var(--danger);font-size:13px"></div>
+    </form>
+  </section>
+
+  <!-- CTA final -->
+  <div class="lp-cta">
+    <h2>Pronto para acompanhar o seu projeto em equipa?</h2>
+    <p>Crie a sua conta gratuitamente e experimente o quadro em tempo real.</p>
+    <a href="/entrar.html?criar=1" class="btn btn-primary">Criar conta grátis</a>
+  </div>
+
+  <footer class="lp-footer" id="lp-footer"></footer>
+
+  <script src="/js/lp-partials.js"></script>
+  <script>
+    renderizarCabecalhoRodapeLP(null);
+    ativarRevealOnScrollLP();
+
+    document.getElementById("form-feedback-home").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const sucesso = document.getElementById("fb-home-sucesso");
+      const erroBox = document.getElementById("fb-home-erro");
+      sucesso.style.display = "none";
+      erroBox.style.display = "none";
+      try {
+        const res = await fetch("/api/feedback", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: document.getElementById("fb-nome").value,
+            email: document.getElementById("fb-email").value,
+            message: document.getElementById("fb-mensagem").value,
+            page: "home",
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.erro || "Erro ao enviar.");
+        sucesso.style.display = "block";
+        e.target.reset();
+      } catch (err) {
+        erroBox.textContent = err.message;
+        erroBox.style.display = "block";
+      }
+    });
+  </script>
+</body>
+</html>

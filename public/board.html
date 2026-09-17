@@ -66,8 +66,8 @@
 
       <!-- Vista: Lista -->
       <div id="view-lista" style="display:none">
-        <table class="admin-table">
-          <thead><tr><th>Tarefa</th><th>Coluna</th><th>Prioridade</th><th>Responsável</th><th>Prazo</th></tr></thead>
+        <table class="admin-table grid-table">
+          <thead><tr><th>#</th><th>Tarefa</th><th>Coluna</th><th>Prioridade</th><th>Responsável</th><th>Prazo</th></tr></thead>
           <tbody id="tbody-lista-tarefas"></tbody>
         </table>
       </div>
@@ -86,6 +86,7 @@
       <!-- Vista: Conversa da equipa -->
       <div id="view-conversa" style="display:none">
         <div class="channel-box">
+          <div class="channel-header"><span class="dot"></span> Conversa da equipa · <span id="channel-nome-projeto"></span></div>
           <div class="channel-feed" id="channel-feed"></div>
           <div id="channel-audio-preview" style="display:none;align-items:center;gap:10px;padding:8px 4px;border-top:1px solid var(--border)"></div>
           <form id="form-channel" class="channel-input-row">

@@ -21,6 +21,44 @@ function corPara(id) {
 }
 
 // ---------------- Permissões (auxiliar visual — o servidor é sempre a autoridade final) ----------------
+// Pequena celebração ao mover uma tarefa para a coluna concluída — inspirado
+// na animação de conclusão de tarefas do Asana.
+function celebrarConclusao() {
+  const cores = ["#FC636B", "#22C7DD", "#FFCB00", "#00C875", "#A25DDC"];
+  const container = document.createElement("div");
+  container.className = "confetti-container";
+  for (let i = 0; i < 26; i++) {
+    const peca = document.createElement("span");
+    peca.className = "confetti-piece";
+    peca.style.left = `${Math.random() * 100}vw`;
+    peca.style.background = cores[i % cores.length];
+    peca.style.animationDelay = `${Math.random() * 0.25}s`;
+    peca.style.transform = `rotate(${Math.random() * 360}deg)`;
+    container.appendChild(peca);
+  }
+  document.body.appendChild(container);
+  setTimeout(() => container.remove(), 1600);
+}
+
+// Pequena celebração ao mover uma tarefa para a coluna concluída — inspirado
+// na animação de conclusão de tarefas do Asana.
+function celebrarConclusao() {
+  const cores = ["#FC636B", "#22C7DD", "#FFCB00", "#00C875", "#A25DDC"];
+  const container = document.createElement("div");
+  container.className = "confetti-container";
+  for (let i = 0; i < 26; i++) {
+    const peca = document.createElement("span");
+    peca.className = "confetti-piece";
+    peca.style.left = `${Math.random() * 100}vw`;
+    peca.style.background = cores[i % cores.length];
+    peca.style.animationDelay = `${Math.random() * 0.25}s`;
+    peca.style.transform = `rotate(${Math.random() * 360}deg)`;
+    container.appendChild(peca);
+  }
+  document.body.appendChild(container);
+  setTimeout(() => container.remove(), 1600);
+}
+
 function souDonoDoProjeto() {
   return !!estado.projeto && (eu.role === "admin" || !!estado.sou_responsavel);
 }
@@ -95,6 +133,7 @@ async function carregarQuadro() {
   const projetoAtual = projetos.find((p) => p.id === projectId);
   document.getElementById("nome-projeto").textContent = projetoAtual ? projetoAtual.name : "Projeto";
   document.getElementById("desc-projeto").textContent = projetoAtual?.description || "";
+  document.getElementById("channel-nome-projeto").textContent = projetoAtual ? projetoAtual.name : "";
 
   estado = await api.get(`/api/projects/${projectId}/quadro`);
 
@@ -212,7 +251,12 @@ function renderizarQuadro() {
       const taskId = e.dataTransfer.getData("text/task-id");
       if (!taskId) return;
       const novaPos = zona.children.length;
-      await api.patch(`/api/tasks/${taskId}/mover`, { column_id: col.id, position: novaPos });
+      try {
+        await api.patch(`/api/tasks/${taskId}/mover`, { column_id: col.id, position: novaPos });
+        if (col.is_done) celebrarConclusao();
+      } catch (err) {
+        mostrarToast(err.message);
+      }
     });
   });
 
@@ -234,7 +278,7 @@ function estaAtrasada(t, colunaId) {
 
 function criarCartao(t, colunaId) {
   const el = document.createElement("div");
-  el.className = "task-card";
+  el.className = `task-card card-prio-${t.priority}`;
   const podeMover = souDonoDoProjeto();
   el.draggable = podeMover;
   if (!podeMover) el.style.cursor = "pointer";
@@ -1054,15 +1098,16 @@ function mudarVista(vista) {
 // ---------------- Vista de Lista ----------------
 function renderizarListaTarefas() {
   const nomeColuna = (colId) => estado.colunas.find((c) => c.id === colId)?.name || "—";
-  document.getElementById("tbody-lista-tarefas").innerHTML = estado.tarefas.map((t) => `
+  document.getElementById("tbody-lista-tarefas").innerHTML = estado.tarefas.map((t, i) => `
     <tr style="cursor:pointer" onclick="abrirModalDetalhe('${t.id}')">
+      <td>${i + 1}</td>
       <td style="font-weight:600">${t.title}</td>
       <td>${nomeColuna(t.column_id)}</td>
       <td><span class="prio prio-${t.priority}" style="display:inline-block">${t.priority}</span></td>
       <td>${t.assignee_name || "—"}</td>
       <td style="color:var(--ink-faint);font-size:12.5px">${t.due_date ? formatarData(t.due_date) : "—"}</td>
     </tr>
-  `).join("") || `<tr><td colspan="5" style="text-align:center;color:var(--ink-faint)">Sem tarefas neste projeto.</td></tr>`;
+  `).join("") || `<tr><td colspan="6" style="text-align:center;color:var(--ink-faint)">Sem tarefas neste projeto.</td></tr>`;
 }
 
 // ---------------- Vista de Calendário ----------------

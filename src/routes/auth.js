@@ -37,7 +37,11 @@ const router = express.Router();
 
 // GET /api/auth/config — informação pública necessária ao ecrã de entrada
 router.get("/config", (req, res) => {
-  res.json({ googleClientId: GOOGLE_CLIENT_ID });
+  res.json({
+    googleClientId: GOOGLE_CLIENT_ID,
+    // A "conta de demonstração" só se mostra em desenvolvimento (MOSTRAR_CONTA_DEMO=true).
+    mostrarContaDemo: process.env.MOSTRAR_CONTA_DEMO === "true",
+  });
 });
 
 

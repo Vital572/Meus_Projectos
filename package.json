@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "Prototipo de ferramenta de gestao de projetos colaborativa em tempo real - GPI/UKV",
   "main": "server.js",
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "start": "node server.js",
     "seed": "node db/seed.js"

@@ -1,24 +1,21 @@
 const express = require("express");
-const path = require("path");
-const fs = require("fs");
-const crypto = require("crypto");
 const multer = require("multer");
 const pool = require("../../db/pool");
 const { autenticar } = require("../middleware/auth");
 const { ehDonoDoProjetoOuAdmin, obterProjeto, ehMembroDoProjeto } = require("../lib/permissions");
 const { notificar } = require("../lib/notify");
+const storage = require("../lib/storage");
 
 const router = express.Router();
 router.use(autenticar);
 
-// Ficheiros/imagens/áudio partilhados na conversa da equipa
-const PASTA_CANAL_MEDIA = path.join(__dirname, "..", "..", "uploads", "channel-media");
-fs.mkdirSync(PASTA_CANAL_MEDIA, { recursive: true });
+// Ficheiros/imagens/áudio partilhados na conversa da equipa. Recebidos em
+// memória e guardados no armazenamento (Supabase Storage online) só depois de
+// as permissões serem validadas.
+const PASTA_CANAL_MEDIA = storage.PASTAS.CANAL;
+const PASTA_ANEXOS_TAREFAS = storage.PASTAS.ANEXOS;
 const uploadCanal = multer({
-  storage: multer.diskStorage({
-    destination: (req, file, cb) => cb(null, PASTA_CANAL_MEDIA),
-    filename: (req, file, cb) => cb(null, `${Date.now()}-${crypto.randomUUID()}${path.extname(file.originalname)}`),
-  }),
+  storage: multer.memoryStorage(),
   limits: { fileSize: 20 * 1024 * 1024 }, // 20 MB
 });
 
@@ -152,11 +149,18 @@ router.delete("/:id", async (req, res) => {
       `SELECT user_id FROM gpitrack.project_members WHERE project_id = $1`,
       [id]
     );
+    // Ficheiros do projeto (anexos de tarefas + chat): apagados do armazenamento depois.
+    const { rows: anexosTarefas } = await pool.query(
+      `SELECT stored_name FROM gpitrack.task_attachments WHERE project_id = $1`, [id]);
+    const { rows: mediaCanal } = await pool.query(
+      `SELECT stored_name FROM gpitrack.channel_messages WHERE project_id = $1 AND stored_name IS NOT NULL`, [id]);
     const { rows } = await pool.query(
       `DELETE FROM gpitrack.projects WHERE id = $1 RETURNING id, name`,
       [id]
     );
     if (rows.length === 0) return res.status(404).json({ erro: "Projeto não encontrado." });
+    storage.apagarVarios(PASTA_ANEXOS_TAREFAS, anexosTarefas.map((a) => a.stored_name));
+    storage.apagarVarios(PASTA_CANAL_MEDIA, mediaCanal.map((a) => a.stored_name));
 
     const io = req.app.get("io");
     io.to(`project:${id}`).emit("project:deleted", { projectId: id, autor: req.user.name });
@@ -931,10 +935,10 @@ router.post("/:id/mensagens", async (req, res) => {
 
 // POST /api/projects/:id/mensagens/multimedia — ficheiro, imagem/gif ou áudio
 router.post("/:id/mensagens/multimedia", uploadCanal.single("ficheiro"), async (req, res) => {
+  let nomeGuardado = null;
   try {
     const podeEnviar = await ehMembroDoProjeto(req.user, req.params.id);
     if (!podeEnviar) {
-      if (req.file) fs.unlink(req.file.path, () => {});
       return res.status(403).json({ erro: "Sem permissão para enviar mensagens neste projeto." });
     }
     if (!req.file) return res.status(400).json({ erro: "Selecione um ficheiro para enviar." });
@@ -943,12 +947,14 @@ router.post("/:id/mensagens/multimedia", uploadCanal.single("ficheiro"), async (
     if (!["imagem", "ficheiro", "audio"].includes(tipo)) tipo = "ficheiro";
     const duracao = req.body.duracao ? parseInt(req.body.duracao, 10) : null;
 
+    nomeGuardado = await storage.guardar(PASTA_CANAL_MEDIA, req.file.originalname, req.file.buffer, req.file.mimetype);
+
     const { rows } = await pool.query(
       `INSERT INTO gpitrack.channel_messages
          (project_id, user_id, content, type, file_name, stored_name, file_size, mime_type, duration_seconds)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING id, content, type, file_name, file_size, mime_type, duration_seconds, created_at`,
-      [req.params.id, req.user.id, req.body.legenda || null, tipo, req.file.originalname, req.file.filename, req.file.size, req.file.mimetype, duracao]
+      [req.params.id, req.user.id, req.body.legenda || null, tipo, req.file.originalname, nomeGuardado, req.file.size, req.file.mimetype, duracao]
     );
     const mensagem = {
       ...rows[0], user_id: req.user.id, autor_nome: req.user.name, avatar_color: req.user.avatar_color,
@@ -960,7 +966,7 @@ router.post("/:id/mensagens/multimedia", uploadCanal.single("ficheiro"), async (
 
     res.status(201).json(mensagem);
   } catch (err) {
-    if (req.file) fs.unlink(req.file.path, () => {});
+    if (nomeGuardado) storage.apagar(PASTA_CANAL_MEDIA, nomeGuardado); // não deixa ficheiros "órfãos"
     console.error(err);
     if (err.code === "LIMIT_FILE_SIZE") return res.status(413).json({ erro: "O ficheiro excede o limite de 20 MB." });
     res.status(500).json({ erro: "Erro ao enviar ficheiro." });
@@ -1009,7 +1015,7 @@ router.delete("/mensagens/:messageId", async (req, res) => {
 
   try {
     const { rows } = await pool.query(
-      `SELECT id, project_id, user_id, deleted_at FROM gpitrack.channel_messages WHERE id = $1`,
+      `SELECT id, project_id, user_id, deleted_at, stored_name FROM gpitrack.channel_messages WHERE id = $1`,
       [req.params.messageId]
     );
     const msg = rows[0];
@@ -1026,6 +1032,7 @@ router.delete("/mensagens/:messageId", async (req, res) => {
         `UPDATE gpitrack.channel_messages SET deleted_at = now(), deleted_by = $1 WHERE id = $2`,
         [req.user.id, msg.id]
       );
+      if (msg.stored_name) storage.apagar(PASTA_CANAL_MEDIA, msg.stored_name); // "eliminar para todos" apaga também o ficheiro
       const io = req.app.get("io");
       io.to(`project:${msg.project_id}`).emit("channel:message-deleted", { id: msg.id, escopo: "todos" });
       return res.json({ ok: true });
@@ -1059,11 +1066,11 @@ router.get("/mensagens/:messageId/ficheiro", async (req, res) => {
     const podeVer = await ehMembroDoProjeto(req.user, msg.project_id);
     if (!podeVer) return res.status(403).json({ erro: "Sem permissão para aceder a este ficheiro." });
 
-    const caminho = path.join(PASTA_CANAL_MEDIA, msg.stored_name);
-    if (!fs.existsSync(caminho)) return res.status(404).json({ erro: "O ficheiro já não existe no servidor." });
-
-    res.setHeader("Content-Type", msg.mime_type || "application/octet-stream");
-    res.sendFile(caminho);
+    const enviado = await storage.enviar(req, res, PASTA_CANAL_MEDIA, msg.stored_name, {
+      nomeDownload: msg.file_name,
+      mimetype: msg.mime_type,
+    });
+    if (!enviado) return res.status(404).json({ erro: "O ficheiro já não existe no servidor." });
   } catch (err) {
     console.error(err);
     res.status(500).json({ erro: "Erro ao obter o ficheiro." });

@@ -9,6 +9,16 @@ const bcrypt = require("bcryptjs");
 const pool = require("./pool");
 
 async function seed() {
+  // O seed APAGA todos os dados antes de criar os de exemplo. Numa base de dados
+  // remota (Supabase) isso destruiria a versão online — por isso pede confirmação.
+  if (!pool.ehLocal && process.env.PERMITIR_SEED_REMOTO !== "sim") {
+    console.error(
+      "\nPARADO: a base de dados configurada NÃO é local (é remota, ex.: Supabase).\n" +
+      "O seed apaga TODOS os utilizadores, projetos e tarefas.\n" +
+      "Se tem a certeza, execute: PERMITIR_SEED_REMOTO=sim npm run seed\n"
+    );
+    process.exit(1);
+  }
   const client = await pool.connect();
   try {
     await client.query("SET search_path TO gpitrack");

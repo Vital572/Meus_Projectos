@@ -21,7 +21,9 @@ Browser (HTML/CSS/JS) ── HTTP (REST) ──► Express API ──► Postgre
   arrastável (drag-and-drop nativo) e cliente Socket.IO.
 - **Backend**: Node.js + Express, expõe uma API REST (`/api/...`) e um servidor
   Socket.IO no mesmo processo.
-- **Base de dados**: PostgreSQL local (schema `gpitrack`), gerida através do pgAdmin.
+- **Base de dados**: PostgreSQL (schema `gpitrack`) — local (pgAdmin) em desenvolvimento, **Supabase** online.
+- **Ficheiros** (anexos, áudio do chat): pasta `/uploads` em desenvolvimento, **Supabase Storage** (bucket privado) online.
+- **E-mail**: Gmail API (HTTPS) online; SMTP opcional no seu PC.
 - **Tempo real**: qualquer alteração (criar/mover tarefa, comentar) é gravada na
   base de dados e, de seguida, difundida via Socket.IO a todos os utilizadores
   ligados ao mesmo projeto (sala `project:<id>`).
@@ -350,6 +352,8 @@ Espaço de Gestão, e recebem os lembretes de prazo.
 
 ## Configurar o envio de feedback por e-mail (SMTP)
 
+> **Online (Render grátis) o SMTP está bloqueado.** Use a Gmail API (secção "Conta: Google…" mais abaixo e `DEPLOY.md`). Este método SMTP serve para o seu PC.
+
 O feedback fica **sempre** guardado e visível na Administração, mesmo sem
 configurar nada. Para também chegar ao seu e-mail, preencha no `.env`:
 
@@ -498,6 +502,27 @@ num servidor real ("na nuvem"):
 - **compression** — comprime as respostas HTTP, reduzindo o tempo de carregamento
 - **express-rate-limit** — limita tentativas de login/registo, dificultando ataques de força bruta
 
+## Colocar online (GitHub + Supabase + Render)
+
+O protótipo está pronto para ser publicado: código no **GitHub**, base de dados e ficheiros no
+**Supabase**, servidor no **Render**. O passo a passo completo — com todos os valores a preencher,
+os testes finais e a resolução de problemas — está em **[DEPLOY.md](DEPLOY.md)**.
+
+Resumo do que muda online (e já está feito no código):
+
+- `DATABASE_URL` (Session pooler do Supabase) substitui as variáveis `PG*`; o SSL liga-se sozinho.
+- Os ficheiros enviados vão para o **Supabase Storage** (o disco do Render é apagado a cada deploy).
+  Ficheiros que não sejam imagem/áudio/vídeo/PDF são sempre descarregados, nunca abertos no site.
+  Eliminar uma tarefa, um projeto, ou uma mensagem "para todos" apaga também os ficheiros.
+- E-mails pela **Gmail API (HTTPS)** — o Render grátis bloqueia SMTP.
+- Lembretes de prazo às 08:00 na hora de Angola (`TZ_LEMBRETES`, por defeito `Africa/Luanda`).
+- A app **não arranca** online sem `JWT_SECRET`; o `npm run seed` **recusa** apagar uma base remota;
+  a "conta de demonstração" só aparece com `MOSTRAR_CONTA_DEMO=true` (desenvolvimento local).
+- `/api/saude` para o Render e para serviços de *keep-alive*; arranque com diagnóstico da base de dados nos registos.
+
+Em desenvolvimento local nada muda: sem `DATABASE_URL` nem `SUPABASE_*`, continua a usar o PostgreSQL
+local e a pasta `/uploads`.
+
 ## Espaço de Gestão (`/workspace.html`)
 
 Além da Administração da plataforma (só para administradores), qualquer membro
@@ -555,19 +580,25 @@ tem de estar verificado pelo Google). Se já existir uma conta com o mesmo e-mai
 A regra de "sessão única por conta" também se aplica.
 
 **B) Enviar e-mails pelo Gmail (recuperação de conta + notificações de projeto)**
-- *Opção simples* — palavra-passe de aplicação: preencha `SMTP_HOST`, `SMTP_USER`, `SMTP_PASS`
-  (ver secção "Configurar o envio de feedback por e-mail").
-- *Opção Gmail API (OAuth2, sem guardar a password da conta)*: no mesmo projeto Google,
-  ative a **Gmail API**; no cliente OAuth do passo A adicione o URI de redirecionamento
-  `https://developers.google.com/oauthplayground`; em
-  [OAuth Playground](https://developers.google.com/oauthplayground) clique na roda dentada →
-  *Use your own OAuth credentials*, autorize o âmbito `https://mail.google.com/` com a conta
-  que vai enviar e troque o código por tokens. Copie o **Refresh token** para
-  `GMAIL_REFRESH_TOKEN` e o endereço dessa conta para `GMAIL_USER`.
-  > Com o ecrã de consentimento em modo "Teste", o Google expira o refresh token ao fim de
-  > 7 dias; para o manter, passe a aplicação a "Em produção" (para uso próprio basta).
-- Defina `APP_URL` com o endereço real da aplicação (ele entra nas ligações dos e-mails;
-  em `localhost` fica `http://localhost:3000`).
+
+O envio usa a **Gmail API por HTTPS**. (O plano gratuito do Render bloqueia as portas SMTP, por isso
+o SMTP só serve para testar no seu PC.)
+
+1. No mesmo projeto Google, ative a **Gmail API** (*APIs e serviços → Biblioteca → Gmail API → Ativar*).
+2. No cliente OAuth do passo A, adicione o URI de redirecionamento
+   `https://developers.google.com/oauthplayground`.
+3. Em [OAuth Playground](https://developers.google.com/oauthplayground): roda dentada →
+   *Use your own OAuth credentials* (ID e segredo do cliente) → no Passo 1 escreva o âmbito
+   `https://www.googleapis.com/auth/gmail.send` → *Authorize APIs* com a conta Gmail que vai enviar →
+   *Exchange authorization code for tokens* → copie o **Refresh token**.
+4. No `.env` (ou nas variáveis do Render): `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`,
+   `GMAIL_USER` (a conta que autorizou) e `GMAIL_REFRESH_TOKEN`.
+   > Com o ecrã de consentimento em modo "Teste", o Google expira o refresh token ao fim de
+   > 7 dias; para o manter, passe a aplicação a "Em produção" (para uso próprio basta).
+5. Defina `APP_URL` com o endereço real da aplicação (entra nas ligações dos e-mails).
+
+*Alternativa só para o seu PC:* SMTP com "palavra-passe de aplicação" (`SMTP_HOST`, `SMTP_USER`,
+`SMTP_PASS`; ver "Configurar o envio de feedback por e-mail"). Se a Gmail API estiver configurada, tem prioridade.
 
 ### Notificações de projeto por e-mail
 Cada notificação que aparece no sino (tarefa atribuída, comentário, menção, convite,

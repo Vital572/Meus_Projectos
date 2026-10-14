@@ -20,6 +20,8 @@ const feedbackRoutes = require("./src/routes/feedback");
 const { configurarSockets } = require("./src/sockets");
 const cron = require("node-cron");
 const { verificarPrazosDeTarefas } = require("./src/lib/lembretes");
+const pool = require("./db/pool");
+const storage = require("./src/lib/storage");
 
 const app = express();
 // Necessário quando a app corre atrás de um proxy (Render, Railway, etc.) —
@@ -104,12 +106,24 @@ const limitadorFeedback = rateLimit({
 });
 app.use("/api/feedback", limitadorFeedback, feedbackRoutes);
 
-app.get("/api/saude", (req, res) => res.json({ ok: true, hora: new Date().toISOString() }));
+// Usado pelo Render ("Health Check Path") e por serviços de "keep-alive".
+// Responde sempre 200 (para o Render não reiniciar a app por uma falha
+// momentânea da base de dados); o campo "bd" diz se a base de dados responde.
+app.get("/api/saude", async (req, res) => {
+  let bd = false;
+  try {
+    await pool.query("SELECT 1");
+    bd = true;
+  } catch {}
+  res.json({ ok: true, bd, hora: new Date().toISOString() });
+});
 
 configurarSockets(io);
 
-// Todos os dias às 08:00 — avisa quem tem tarefas com prazo amanhã ou hoje.
-// (usar a hora do sistema onde o servidor estiver hospedado)
+// Todos os dias às 08:00 (hora de Angola, mesmo que o servidor esteja noutro
+// fuso — o Render usa UTC) — avisa quem tem tarefas com prazo amanhã ou hoje.
+// Nota: no plano gratuito do Render a app "adormece" após 15 min sem pedidos e
+// este agendamento só corre se ela estiver acordada (ver DEPLOY.md, "keep-alive").
 cron.schedule("0 8 * * *", async () => {
   try {
     const resultado = await verificarPrazosDeTarefas(io);
@@ -117,10 +131,46 @@ cron.schedule("0 8 * * *", async () => {
   } catch (err) {
     console.error("[lembretes] erro ao verificar prazos:", err);
   }
-});
+}, { timezone: process.env.TZ_LEMBRETES || "Africa/Luanda" });
+
+// Em vez de "rebentar" por um erro solto (ex.: uma falha momentânea de rede),
+// regista-o e continua a servir os restantes utilizadores.
+process.on("unhandledRejection", (err) => console.error("[erro não tratado]", err));
+process.on("uncaughtException", (err) => console.error("[exceção não tratada]", err));
+
+// Diagnóstico no arranque: diz logo nos registos do Render o que falta/está errado.
+async function verificarBaseDeDados() {
+  try {
+    const { rows } = await pool.query("SELECT to_regclass('gpitrack.users') AS tabela");
+    if (rows[0].tabela) {
+      console.log("[bd] ligação ao PostgreSQL OK.");
+    } else {
+      console.warn("[bd] ligado ao PostgreSQL, mas as tabelas NÃO existem. Execute db/schema.sql no SQL Editor do Supabase (ver DEPLOY.md).");
+    }
+  } catch (err) {
+    let dica = "";
+    if (err.code === "ENETUNREACH" || /ENETUNREACH/.test(err.message)) dica = " → o Render só usa IPv4: use a 'Session pooler' do Supabase (aws-0-….pooler.supabase.com:5432), não a ligação direta.";
+    else if (err.code === "ENOTFOUND") dica = " → o endereço (host) da DATABASE_URL está errado.";
+    else if (err.code === "28P01") dica = " → password da base de dados errada (a da DATABASE_URL tem de ser a do projeto Supabase; símbolos especiais têm de ir codificados).";
+    else if (/Tenant or user not found/i.test(err.message)) dica = " → o utilizador tem de ser 'postgres.<ref-do-projeto>' (copie a string da Session pooler no Supabase → Connect).";
+    console.error(`[bd] NÃO foi possível ligar ao PostgreSQL: ${err.message}${dica}`);
+  }
+}
+
+// O Render envia SIGTERM em cada novo deploy: fecha com calma (sem cortar pedidos a meio).
+function encerrar(sinal) {
+  console.log(`\n[${sinal}] a encerrar…`);
+  server.close(() => pool.end().finally(() => process.exit(0)));
+  setTimeout(() => process.exit(0), 8000).unref();
+}
+process.on("SIGTERM", () => encerrar("SIGTERM"));
+process.on("SIGINT", () => encerrar("SIGINT"));
 
 const PORTA = process.env.PORT || 3000;
-server.listen(PORTA, () => {
-  console.log(`\nGPI Track a correr em http://localhost:${PORTA}`);
-  console.log("Utilize 'npm run seed' para popular a base de dados com dados de exemplo.\n");
+// "0.0.0.0": o Render exige que a app aceite ligações vindas de fora do contentor.
+server.listen(PORTA, "0.0.0.0", () => {
+  console.log(`\nGPI Track a correr na porta ${PORTA}${process.env.APP_URL ? " — " + process.env.APP_URL : ` — http://localhost:${PORTA}`}`);
+  if (!process.env.RENDER) console.log("Utilize 'npm run seed' para popular a base de dados com dados de exemplo (só em desenvolvimento local).\n");
+  verificarBaseDeDados();
+  storage.iniciar();
 });

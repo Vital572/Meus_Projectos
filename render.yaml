@@ -1,0 +1,37 @@
+# Blueprint do Render (opcional): Render → New + → Blueprint → escolher o repositório.
+# Também pode criar o serviço à mão, ver DEPLOY.md — os valores são os mesmos.
+services:
+  - type: web
+    name: gpi-track
+    runtime: node
+    plan: free
+    region: frankfurt
+    branch: main
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/saude
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: TZ
+        value: Africa/Luanda
+      - key: JWT_SECRET
+        generateValue: true
+      # --- preencher no painel do Render (não ficam no GitHub) ---
+      - key: DATABASE_URL          # Supabase → Connect → Session pooler
+        sync: false
+      - key: SUPABASE_URL          # https://<ref>.supabase.co
+        sync: false
+      - key: SUPABASE_SECRET_KEY   # Supabase → Project Settings → API Keys → secret
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: GMAIL_USER
+        sync: false
+      - key: GMAIL_REFRESH_TOKEN
+        sync: false
+      - key: APP_URL               # https://o-seu-servico.onrender.com
+        sync: false

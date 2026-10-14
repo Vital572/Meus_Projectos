@@ -1,6 +1,14 @@
 const jwt = require("jsonwebtoken");
 const pool = require("../../db/pool");
 
+// Em produção (Render) o segredo TEM de ser definido: com o valor de
+// desenvolvimento, qualquer pessoa poderia forjar um login de administrador.
+const EM_PRODUCAO = process.env.NODE_ENV === "production" || !!process.env.RENDER;
+const SEGREDO_EXEMPLO = "altere-este-segredo-antes-de-usar-em-produção";
+if (EM_PRODUCAO && (!process.env.JWT_SECRET || process.env.JWT_SECRET === SEGREDO_EXEMPLO || process.env.JWT_SECRET.length < 24)) {
+  console.error("ERRO: defina a variável JWT_SECRET (um texto aleatório com 24+ caracteres) nas variáveis de ambiente do Render. A aplicação não arranca sem isto.");
+  process.exit(1);
+}
 const JWT_SECRET = process.env.JWT_SECRET || "gpi-track-segredo-de-desenvolvimento";
 
 function assinarToken(user) {

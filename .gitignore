@@ -1,0 +1,18 @@
+# Dependências (o Render corre "npm install" sozinho)
+node_modules/
+
+# SEGREDOS — nunca enviar para o GitHub
+.env
+.env.*
+!.env.example
+
+# Ficheiros enviados em desenvolvimento local (online ficam no Supabase Storage)
+uploads/
+
+# Lixo do sistema / editores
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

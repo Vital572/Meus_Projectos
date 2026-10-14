@@ -55,7 +55,7 @@
             <div class="divisor-ou">ou</div>
             <div class="google-slot" id="google-login"></div>
           </div>
-          <div class="hint">Conta de demonstração: vital@ukv.ao / 123456</div>
+          <div class="hint" id="hint-demo" style="display:none">Conta de demonstração: vital@ukv.ao / 123456</div>
         </div>
 
         <div id="painel-registo" style="display:none">
@@ -147,8 +147,10 @@
     // ---- Entrar com o Google ----
     // O botão só aparece se o servidor tiver GOOGLE_CLIENT_ID configurado.
     async function iniciarGoogle() {
-      let clientId = null;
-      try { clientId = (await api.get("/api/auth/config")).googleClientId; } catch {}
+      let cfg = {};
+      try { cfg = await api.get("/api/auth/config"); } catch {}
+      if (cfg.mostrarContaDemo) document.getElementById("hint-demo").style.display = "block";
+      const clientId = cfg.googleClientId;
       if (!clientId) return;
 
       await new Promise((resolve, reject) => {

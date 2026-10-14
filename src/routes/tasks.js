@@ -1,31 +1,23 @@
 const express = require("express");
-const path = require("path");
-const fs = require("fs");
-const crypto = require("crypto");
 const multer = require("multer");
 const pool = require("../../db/pool");
 const { autenticar } = require("../middleware/auth");
 const { obterTarefa, podeGerirTarefa, obterProjeto, ehMembroDoProjeto, ehDonoDoProjetoOuAdmin, podeVerTarefa, podeInteragirComTarefa } = require("../lib/permissions");
 const { notificar } = require("../lib/notify");
+const storage = require("../lib/storage");
 
 const router = express.Router();
 router.use(autenticar);
 
 // ------------------------------------------------------------
-// Upload de anexos — ficheiros gravados em /uploads/task-attachments,
-// com um nome único em disco (o nome original fica guardado na BD).
+// Upload de anexos — o ficheiro é recebido em memória, validado, e só depois
+// guardado (Supabase Storage online / pasta /uploads em desenvolvimento) com
+// um nome único. O nome original fica guardado na BD.
 // ------------------------------------------------------------
-const PASTA_ANEXOS = path.join(__dirname, "..", "..", "uploads", "task-attachments");
-fs.mkdirSync(PASTA_ANEXOS, { recursive: true });
+const PASTA_ANEXOS = storage.PASTAS.ANEXOS;
 
 const upload = multer({
-  storage: multer.diskStorage({
-    destination: (req, file, cb) => cb(null, PASTA_ANEXOS),
-    filename: (req, file, cb) => {
-      const nomeUnico = `${Date.now()}-${crypto.randomUUID()}${path.extname(file.originalname)}`;
-      cb(null, nomeUnico);
-    },
-  }),
+  storage: multer.memoryStorage(),
   limits: { fileSize: 15 * 1024 * 1024 }, // 15 MB
 });
 
@@ -269,12 +261,19 @@ router.delete("/:id", async (req, res) => {
   }
 
   try {
+    // Nomes dos ficheiros anexados (a BD apaga os registos em cascata; os
+    // ficheiros em si são apagados do armazenamento logo a seguir).
+    const { rows: anexos } = await pool.query(
+      `SELECT stored_name FROM gpitrack.task_attachments WHERE task_id = $1`,
+      [id]
+    );
     const { rows } = await pool.query(
       `DELETE FROM gpitrack.tasks WHERE id = $1 RETURNING id, project_id, title`,
       [id]
     );
     const task = rows[0];
     if (!task) return res.status(404).json({ erro: "Tarefa não encontrada." });
+    storage.apagarVarios(PASTA_ANEXOS, anexos.map((a) => a.stored_name));
 
     const io = req.app.get("io");
     io.to(`project:${task.project_id}`).emit("task:deleted", { taskId: task.id, autor: req.user.name });
@@ -457,22 +456,20 @@ router.get("/:id/anexos", async (req, res) => {
 // POST /api/tasks/:id/anexos — anexa um ficheiro e envia-o de imediato
 // ao responsável (criador) do projeto, notificando-o em tempo real.
 router.post("/:id/anexos", upload.single("ficheiro"), async (req, res) => {
+  let nomeGuardado = null;
   try {
     const tarefa = await obterTarefa(req.params.id);
     if (!tarefa) {
-      if (req.file) fs.unlink(req.file.path, () => {});
       return res.status(404).json({ erro: "Tarefa não encontrada." });
     }
 
     if (!(await podeVerTarefa(req.user, tarefa))) {
-      if (req.file) fs.unlink(req.file.path, () => {});
       return res.status(403).json({ erro: "Sem acesso a esta tarefa." });
     }
     // Ver a tarefa não chega: só quem está diretamente envolvido nela (o
     // atribuído, um responsável extra, um responsável do projeto, ou um
     // administrador) pode enviar ficheiros — os restantes só veem.
     if (!(await podeInteragirComTarefa(req.user, tarefa))) {
-      if (req.file) fs.unlink(req.file.path, () => {});
       return res.status(403).json({ erro: "Só quem é responsável por esta tarefa pode enviar ficheiros. Pode ver as informações, mas não interagir." });
     }
 
@@ -486,17 +483,19 @@ router.post("/:id/anexos", upload.single("ficheiro"), async (req, res) => {
       [tarefa.project_id]
     );
     if (!projeto || responsaveisAtivos.length === 0) {
-      fs.unlink(req.file.path, () => {});
       return res.status(400).json({ erro: "Este projeto não tem nenhum responsável definido." });
     }
     const responsavelPrincipal = responsaveisAtivos[0].user_id;
+
+    // Só agora (já com as permissões validadas) o ficheiro é guardado.
+    nomeGuardado = await storage.guardar(PASTA_ANEXOS, req.file.originalname, req.file.buffer, req.file.mimetype);
 
     const { rows } = await pool.query(
       `INSERT INTO gpitrack.task_attachments
          (task_id, project_id, uploaded_by, sent_to, file_name, stored_name, file_size, mime_type)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        RETURNING id, file_name, file_size, mime_type, created_at`,
-      [req.params.id, tarefa.project_id, req.user.id, responsavelPrincipal, req.file.originalname, req.file.filename, req.file.size, req.file.mimetype]
+      [req.params.id, tarefa.project_id, req.user.id, responsavelPrincipal, req.file.originalname, nomeGuardado, req.file.size, req.file.mimetype]
     );
     const anexo = { ...rows[0], enviado_por_nome: req.user.name, enviado_para_nome: null };
 
@@ -516,7 +515,7 @@ router.post("/:id/anexos", upload.single("ficheiro"), async (req, res) => {
 
     res.status(201).json(anexo);
   } catch (err) {
-    if (req.file) fs.unlink(req.file.path, () => {});
+    if (nomeGuardado) storage.apagar(PASTA_ANEXOS, nomeGuardado); // não deixa ficheiros "órfãos"
     console.error(err);
     if (err.code === "LIMIT_FILE_SIZE") {
       return res.status(413).json({ erro: "O ficheiro excede o limite de 15 MB." });
@@ -539,10 +538,12 @@ router.get("/anexos/:anexoId/download", async (req, res) => {
     const podeVer = await ehMembroDoProjeto(req.user, anexo.project_id);
     if (!podeVer) return res.status(403).json({ erro: "Sem permissão para aceder a este ficheiro." });
 
-    const caminho = path.join(PASTA_ANEXOS, anexo.stored_name);
-    if (!fs.existsSync(caminho)) return res.status(404).json({ erro: "O ficheiro já não existe no servidor." });
-
-    res.download(caminho, anexo.file_name);
+    const enviado = await storage.enviar(req, res, PASTA_ANEXOS, anexo.stored_name, {
+      nomeDownload: anexo.file_name,
+      mimetype: anexo.mime_type,
+      comoAnexo: true,
+    });
+    if (!enviado) return res.status(404).json({ erro: "O ficheiro já não existe no servidor." });
   } catch (err) {
     console.error(err);
     res.status(500).json({ erro: "Erro ao descarregar o anexo." });

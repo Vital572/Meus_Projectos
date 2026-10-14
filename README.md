@@ -123,7 +123,8 @@ prototipo/
 │   ├── lib/notify.js          # Helper para criar e emitir notificações em tempo real
 │   └── sockets/index.js       # Lógica de tempo real (Socket.IO) + presença global
 └── public/                    # Frontend (HTML, CSS, JS)
-    ├── index.html              # Login / Registo
+    ├── index.html              # Página inicial pública
+    ├── entrar.html / esqueci-senha.html / redefinir-senha.html   # Entrar, criar conta e recuperar conta
     ├── projetos.html           # Lista de projetos
     ├── board.html               # Quadro Kanban em tempo real
     ├── admin.html                # Painel de administração
@@ -134,7 +135,7 @@ prototipo/
 ## Funcionalidades implementadas
 
 **Colaboração em tempo real**
-- Registo e autenticação de utilizadores (JWT em cookie httpOnly)
+- Registo e autenticação de utilizadores (JWT), com **Entrar com o Google**, **recuperação de password** e **barra de segurança da password** (ver secção abaixo)
 - Criação de projetos com colunas Kanban padrão (Por Fazer, Em Curso, Em Revisão, Concluído)
 - Criação, edição e movimentação de tarefas (drag-and-drop) com sincronização em tempo real
 - Comentários em tempo real por tarefa, com indicador de "a escrever…" e menções (`@Nome`)
@@ -247,6 +248,15 @@ também o `db/migration_v10.sql`. E se as notificações de pedido de convite
 alguma vez falharam com erro 500, aplique o `db/migration_v11.sql` (corrige o
 tamanho da coluna que guarda o tipo da notificação).
 
+Se já tinha tudo isso mas ainda não tinha a **visibilidade de tarefas** (opção,
+ao criar uma tarefa, de a tornar visível a toda a equipa ou só aos
+responsáveis), aplique também o `db/migration_v12.sql`.
+
+Se já tinha isso mas ainda não tinha **editar/eliminar mensagens da conversa
+da equipa**, aplique também o `db/migration_v14.sql` (adiciona `edited_at`,
+`deleted_at`/`deleted_by` a `channel_messages` e a tabela
+`channel_message_hidden`).
+
 ## Liberdade para sair de um projeto — correção importante
 
 Corrigi um bug real: a saída/remoção de um projeto ainda estava presa ao
@@ -261,6 +271,55 @@ responsável, tem primeiro de tornar outra pessoa responsável (ou pedir a um
 administrador). O mesmo se aplica ao envio de anexos e ao cancelamento de
 reuniões, que agora notificam/consideram todos os responsáveis atuais, não
 apenas quem criou o projeto originalmente.
+
+## Trocar de projeto sem sair do quadro
+
+No topo da barra lateral do quadro (`/board.html`) há agora um seletor rápido
+com o nome do projeto atual — clicar nele mostra a lista dos outros projetos
+da pessoa, para saltar diretamente para outro sem ter de voltar a "Os meus
+projetos" (que continua acessível no fundo da lista, "Ver todos os
+projetos →").
+
+## Tarefas visíveis a toda a equipa: ver não é o mesmo que interagir
+
+Uma tarefa marcada como visível "a toda a equipa" pode ser vista por
+qualquer membro do projeto, mas **só pode ser comentada ou receber anexos
+por quem está diretamente envolvido nela**: o atribuído, um responsável
+extra dessa tarefa, um responsável do projeto, ou um administrador. Um
+membro que só a vê (sem fazer parte dela) fica em modo só-leitura — vê
+título, descrição, checklist, etiquetas e comentários já existentes, mas o
+formulário de comentar e o de enviar ficheiros ficam escondidos, com um
+aviso a explicar porquê. Isto é verificado também no servidor (não só
+escondido na interface), por isso um pedido direto à API é recusado da
+mesma forma.
+
+## Editar, eliminar e copiar mensagens da conversa da equipa
+
+Cada mensagem de texto na Conversa da equipa tem agora um menu "⋯" (visível
+ao passar o rato, ou sempre em ecrãs táteis) com até três ações:
+
+- **Copiar** — copia o texto da mensagem para a área de transferência.
+- **Editar** (só a própria pessoa, só mensagens de texto) — mostra um campo
+  para alterar o texto; depois de guardar, a mensagem passa a ter a marca
+  "(editada)" junto da data, visível para todos.
+- **Eliminar** — pergunta sempre se é **"para todos"** ou **"só para mim"**:
+  - **Para todos**: só o autor da mensagem ou um responsável do
+    projeto/administrador pode fazer isto. O conteúdo deixa de ser mostrado
+    a toda a gente, e passa a aparecer "Mensagem eliminada" no lugar.
+  - **Só para mim**: qualquer pessoa pode ocultar qualquer mensagem da sua
+    própria vista — os restantes continuam a ver a mensagem normalmente, sem
+    saber que alguém a ocultou.
+
+Mensagens com ficheiro/imagem/áudio só têm a opção de eliminar (copiar e
+editar não se aplicam a esse tipo).
+
+## Indicador "a escrever…" na conversa da equipa
+
+Enquanto alguém escreve no campo de mensagem da Conversa da equipa, as
+outras pessoas que estiverem a ver essa conversa no mesmo projeto veem, por
+baixo do histórico, "Fulano está a escrever…" com três pontinhos animados
+(como no WhatsApp/Messenger). O aviso desaparece sozinho ao fim de pouco
+tempo sem nova atividade de escrita.
 
 ## Anexos e ficheiros do canal — correção importante
 
@@ -397,6 +456,14 @@ próprio, e marcar **qual coluna representa "tarefa concluída"** — usada em
 todos os relatórios e gráficos da plataforma. Só pode haver uma por projeto;
 marcar uma nova desmarca automaticamente a anterior.
 
+Uma coluna também pode ser marcada como **restrita** (visível só para
+responsáveis/admin) — útil, por exemplo, numa coluna "Em Revisão" ou mesmo na
+própria coluna "Concluído". Correção importante: se uma pessoa já estava a
+trabalhar numa tarefa sua (por ser o atribuído ou um responsável extra) e essa
+tarefa é movida para uma coluna restrita, ela **não perde o acesso a essa
+tarefa** — continua a vê-la e a conseguir comentar/anexar ficheiros nela,
+apenas deixa de ver as restantes tarefas dessa coluna.
+
 ## Dashboards com gráficos
 
 Além do separador "Visão Geral" da Administração, agora há gráficos (Chart.js)
@@ -443,9 +510,76 @@ tem agora acesso a um espaço próprio, com o âmbito limitado ao que lhe perten
 - **Relatórios** — resumo pessoal (concluídas, atrasadas, por prioridade) e exportação em CSV
 - **Reuniões** — marcar reuniões num projeto (todos os membros são notificados automaticamente), com lista de próximas e já realizadas
 
+## Conta: Google, recuperação de password e força da password
+
+**Se já tinha uma versão anterior instalada**, aplique `db/migration_v13.sql` no pgAdmin
+(adiciona `google_id`, a preferência de e-mail e a tabela `password_resets`) e execute
+`npm install` (nova dependência: `google-auth-library`). Instalações novas só precisam do `schema.sql`.
+
+### Barra de segurança da password (criar conta e redefinir password)
+Ao escrever a password, uma barra de progressão mostra o nível — *Muito fraca, Fraca,
+Razoável, Forte, Muito forte* — com base no tamanho (8+ e 12+), maiúsculas e minúsculas,
+números e símbolos, e penaliza passwords comuns (`123456`, `password`…) ou repetitivas.
+Uma lista de requisitos vai ficando marcada a verde. O botão "Criar conta" só ativa a partir
+de **Razoável**, e o servidor repete a mesma validação (a regra está num único ficheiro,
+`public/js/password-strength.js`, usado pelo navegador e pelo servidor). As contas já
+existentes (ex.: `123456` do seed) continuam a entrar normalmente — a regra aplica-se ao
+criar conta e ao redefinir a password.
+
+### Recuperação de conta ("Esqueceu a password?")
+1. No ecrã de entrada, "Esqueceu a password?" → `/esqueci-senha.html` → indica o e-mail.
+2. A plataforma envia um e-mail com uma ligação para `/redefinir-senha.html?token=…`
+   (válida **60 minutos**, **uso único**; na base de dados guarda-se só o hash do token).
+3. A pessoa escolhe a nova password (com a mesma barra de segurança) e volta a entrar.
+
+A resposta é sempre a mesma exista a conta ou não (não revela que e-mails estão registados),
+e há limite de pedidos. **Sem Gmail/SMTP configurado**, o e-mail não sai, mas a ligação de
+recuperação é escrita na consola do servidor — útil para testar. Quem criou a conta só com
+o Google pode usar o mesmo fluxo para definir uma password.
+
+### Configurar o Google (login + e-mails)
+Tudo é opcional: sem estas variáveis a aplicação funciona como antes (o botão do Google
+simplesmente não aparece).
+
+**A) Entrar com o Google**
+1. Em [console.cloud.google.com](https://console.cloud.google.com) crie um projeto.
+2. *APIs e serviços → Ecrã de consentimento OAuth*: tipo **Externo**; enquanto estiver em
+   "Teste", adicione os e-mails que vão experimentar em *Utilizadores de teste*.
+3. *Credenciais → Criar credenciais → ID de cliente OAuth → Aplicação Web*.
+   Em **Origens JavaScript autorizadas** adicione `http://localhost:3000` (e o endereço
+   público quando publicar).
+4. Copie o **ID de cliente** para `GOOGLE_CLIENT_ID` no `.env` (o segredo vai em `GOOGLE_CLIENT_SECRET`).
+
+Quem entra com o Google pela primeira vez fica com conta criada automaticamente (o e-mail
+tem de estar verificado pelo Google). Se já existir uma conta com o mesmo e-mail, é associada.
+A regra de "sessão única por conta" também se aplica.
+
+**B) Enviar e-mails pelo Gmail (recuperação de conta + notificações de projeto)**
+- *Opção simples* — palavra-passe de aplicação: preencha `SMTP_HOST`, `SMTP_USER`, `SMTP_PASS`
+  (ver secção "Configurar o envio de feedback por e-mail").
+- *Opção Gmail API (OAuth2, sem guardar a password da conta)*: no mesmo projeto Google,
+  ative a **Gmail API**; no cliente OAuth do passo A adicione o URI de redirecionamento
+  `https://developers.google.com/oauthplayground`; em
+  [OAuth Playground](https://developers.google.com/oauthplayground) clique na roda dentada →
+  *Use your own OAuth credentials*, autorize o âmbito `https://mail.google.com/` com a conta
+  que vai enviar e troque o código por tokens. Copie o **Refresh token** para
+  `GMAIL_REFRESH_TOKEN` e o endereço dessa conta para `GMAIL_USER`.
+  > Com o ecrã de consentimento em modo "Teste", o Google expira o refresh token ao fim de
+  > 7 dias; para o manter, passe a aplicação a "Em produção" (para uso próprio basta).
+- Defina `APP_URL` com o endereço real da aplicação (ele entra nas ligações dos e-mails;
+  em `localhost` fica `http://localhost:3000`).
+
+### Notificações de projeto por e-mail
+Cada notificação que aparece no sino (tarefa atribuída, comentário, menção, convite,
+reunião, prazo, anúncio…) segue também por e-mail para o endereço da conta, com um botão que
+abre direto o projeto/tarefa. Cada pessoa pode desligar isto em **Espaço de Gestão → Visão
+geral → "Notificações por e-mail"**. Com `EMAIL_APENAS_OFFLINE=true` só recebe e-mail quem
+não está online nesse momento. O envio corre em segundo plano — se o e-mail falhar, a
+notificação em tempo real não é afetada.
+
 ## Possíveis extensões futuras
 
-- Autenticação multifator e recuperação de password
+- Autenticação multifator
 - Vista de linha do tempo (Gantt) e calendário
 - Notificações por e-mail
 - Relatórios de produtividade por membro da equipa

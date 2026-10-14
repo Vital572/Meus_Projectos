@@ -16,7 +16,9 @@ CREATE TABLE IF NOT EXISTS users (
     id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name          VARCHAR(120) NOT NULL,
     email         VARCHAR(160) NOT NULL UNIQUE,
-    password_hash VARCHAR(255) NOT NULL,
+    password_hash VARCHAR(255),            -- NULL = conta criada só com Google
+    google_id     VARCHAR(64) UNIQUE,
+    email_notificacoes BOOLEAN NOT NULL DEFAULT true,
     avatar_color  VARCHAR(7)   NOT NULL DEFAULT '#0EA5B7',
     role          VARCHAR(20)  NOT NULL DEFAULT 'member', -- 'admin' | 'member'
     is_active     BOOLEAN      NOT NULL DEFAULT true,
@@ -93,7 +95,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     reminded_day_before BOOLEAN NOT NULL DEFAULT false, -- já foi notificado "falta 1 dia"
-    reminded_due_day    BOOLEAN NOT NULL DEFAULT false  -- já foi notificado "é hoje"
+    reminded_due_day    BOOLEAN NOT NULL DEFAULT false, -- já foi notificado "é hoje"
+    visibility   VARCHAR(20) NOT NULL DEFAULT 'equipa' -- 'equipa' (todos veem) | 'restrita' (só responsáveis + responsáveis da tarefa)
 );
 
 CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project_id);
@@ -221,10 +224,22 @@ CREATE TABLE IF NOT EXISTS channel_messages (
     file_size   INTEGER,
     mime_type   VARCHAR(150),
     duration_seconds INTEGER, -- duração de mensagens de áudio
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    edited_at   TIMESTAMPTZ, -- marca "(editada)" quando o texto foi alterado
+    deleted_at  TIMESTAMPTZ, -- eliminada "para todos" — conteúdo escondido de todos
+    deleted_by  UUID REFERENCES users(id) ON DELETE SET NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_channel_messages_project ON channel_messages(project_id, created_at);
+
+-- Eliminação "só para mim": a mensagem continua visível para os outros, só
+-- deixa de aparecer para quem a ocultou.
+CREATE TABLE IF NOT EXISTS channel_message_hidden (
+    message_id  UUID NOT NULL REFERENCES channel_messages(id) ON DELETE CASCADE,
+    user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    hidden_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (message_id, user_id)
+);
 
 -- ------------------------------------------------------------
 -- Automações por projeto — inspirado no Monday.com. Quando uma
@@ -320,3 +335,16 @@ CREATE TRIGGER trg_tasks_updated_at
     BEFORE UPDATE ON tasks
     FOR EACH ROW
     EXECUTE FUNCTION set_updated_at();
+
+-- ------------------------------------------------------------
+-- Recuperação de conta (v13)
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS password_resets (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token_hash  VARCHAR(64) NOT NULL UNIQUE,
+    expires_at  TIMESTAMPTZ NOT NULL,
+    used_at     TIMESTAMPTZ,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS password_resets_user_idx ON password_resets (user_id);

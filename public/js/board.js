@@ -12,6 +12,8 @@ let timeoutDigitando = null;
 let filtroTexto = "";
 let filtroResponsavel = "";
 let filtroEtiqueta = "";
+let projetosDoUtilizador = [];
+let timeoutDigitandoCanal = null;
 
 const cores = ["#22C7DD", "#F0B429", "#8E44AD", "#34C77B", "#EF6461"];
 function corPara(id) {
@@ -21,25 +23,6 @@ function corPara(id) {
 }
 
 // ---------------- Permissões (auxiliar visual — o servidor é sempre a autoridade final) ----------------
-// Pequena celebração ao mover uma tarefa para a coluna concluída — inspirado
-// na animação de conclusão de tarefas do Asana.
-function celebrarConclusao() {
-  const cores = ["#FC636B", "#22C7DD", "#FFCB00", "#00C875", "#A25DDC"];
-  const container = document.createElement("div");
-  container.className = "confetti-container";
-  for (let i = 0; i < 26; i++) {
-    const peca = document.createElement("span");
-    peca.className = "confetti-piece";
-    peca.style.left = `${Math.random() * 100}vw`;
-    peca.style.background = cores[i % cores.length];
-    peca.style.animationDelay = `${Math.random() * 0.25}s`;
-    peca.style.transform = `rotate(${Math.random() * 360}deg)`;
-    container.appendChild(peca);
-  }
-  document.body.appendChild(container);
-  setTimeout(() => container.remove(), 1600);
-}
-
 // Pequena celebração ao mover uma tarefa para a coluna concluída — inspirado
 // na animação de conclusão de tarefas do Asana.
 function celebrarConclusao() {
@@ -102,12 +85,6 @@ async function iniciar() {
     console.error("Erro ao carregar etiquetas:", err);
   }
 
-  try {
-    await carregarAtividade();
-  } catch (err) {
-    console.error("Erro ao carregar atividade:", err);
-  }
-
   conectarSocket();
   ligarFormularios();
   ligarFiltros();
@@ -134,6 +111,10 @@ async function carregarQuadro() {
   document.getElementById("nome-projeto").textContent = projetoAtual ? projetoAtual.name : "Projeto";
   document.getElementById("desc-projeto").textContent = projetoAtual?.description || "";
   document.getElementById("channel-nome-projeto").textContent = projetoAtual ? projetoAtual.name : "";
+
+  projetosDoUtilizador = projetos;
+  document.getElementById("ps-nome-atual").textContent = projetoAtual ? projetoAtual.name : "Projeto";
+  renderizarSeletorProjetos();
 
   estado = await api.get(`/api/projects/${projectId}/quadro`);
 
@@ -169,8 +150,59 @@ function renderizarMembros() {
           <input type="checkbox" ${m.role === "responsavel" ? "checked" : ""} onchange="alternarResponsavel('${m.id}', this.checked)" style="accent-color:var(--cyan);cursor:pointer" />
           Responsável
         </label>` : ""}
+      ${m.id === eu.id ? `<span onclick="sairDoProjeto()" style="cursor:pointer;color:var(--ink-faint);font-size:13px" title="Sair do projeto">🚪</span>` : ""}
     </div>
   `).join("");
+}
+
+// ---------------- Seletor rápido de projeto ----------------
+// Permite trocar de projeto sem ter de voltar a "Os meus projetos".
+function renderizarSeletorProjetos() {
+  const lista = document.getElementById("ps-lista");
+  if (!lista) return;
+  lista.innerHTML = projetosDoUtilizador.map((p) => `
+    <div class="ps-item ${p.id === projectId ? "ativo" : ""}" data-ps-projeto="${p.id}">
+      <span class="ps-nome">${p.name}${p.id === projectId ? " ✓" : ""}</span>
+    </div>
+  `).join("") || `<div class="ps-item" style="cursor:default">Sem outros projetos.</div>`;
+  lista.innerHTML += `<div class="ps-footer" id="ps-ver-todos">Ver todos os projetos →</div>`;
+
+  lista.querySelectorAll("[data-ps-projeto]").forEach((el) => {
+    el.addEventListener("click", () => {
+      const id = el.dataset.psProjeto;
+      if (id !== projectId) window.location.href = `/board.html?projeto=${id}`;
+      else alternarSeletorProjetos(false);
+    });
+  });
+  document.getElementById("ps-ver-todos")?.addEventListener("click", () => {
+    window.location.href = "/projetos.html";
+  });
+}
+
+function alternarSeletorProjetos(forcar) {
+  const container = document.getElementById("project-switcher");
+  const lista = document.getElementById("ps-lista");
+  const abrir = forcar !== undefined ? forcar : lista.style.display === "none";
+  lista.style.display = abrir ? "block" : "none";
+  container.classList.toggle("aberto", abrir);
+}
+document.addEventListener("click", (e) => {
+  const container = document.getElementById("project-switcher");
+  if (container && !container.contains(e.target)) alternarSeletorProjetos(false);
+});
+
+// Sair deste projeto (não é logout — só deixa de ser membro deste projeto em
+// concreto). Se for o único responsável, o servidor recusa e pede para
+// tornar outra pessoa responsável primeiro (ver "Responsável" acima).
+async function sairDoProjeto() {
+  if (!confirm(`Sair do projeto "${estado.projeto?.name || ""}"? Deixará de ter acesso a ele.`)) return;
+  try {
+    await api.del(`/api/projects/${projectId}/membros/${eu.id}`);
+    mostrarToast("Saiu do projeto.");
+    window.location.href = "/projetos.html";
+  } catch (err) {
+    mostrarToast(err.message);
+  }
 }
 
 async function alternarResponsavel(userId, tornarResponsavel) {
@@ -398,8 +430,8 @@ function conectarSocket() {
       .join("") + `<span class="presence-label">${utilizadores.length} online agora</span>`;
   });
 
-  socket.on("task:created", ({ task, autor }) => {
-    if (autor === eu.name) return;
+  socket.on("task:created", ({ task, autor, autorId }) => {
+    if (autorId ? autorId === eu.id : autor === eu.name) return;
     const coluna = estado.colunas.find((c) => c.id === task.column_id);
     if (!coluna) return; // coluna restrita que este utilizador nem sequer vê
     estado.tarefas.push(task);
@@ -510,7 +542,12 @@ function conectarSocket() {
     }
   });
 
-  socket.on("checklist:item-created", ({ taskId, item }) => atualizarChecklistLocal(taskId, (lista) => [...lista, item]));
+  socket.on("checklist:item-created", ({ taskId, item, autorId }) => {
+    // Quem acrescentou o item já o viu localmente ao submeter o formulário —
+    // evita mostrá-lo em duplicado quando o eco do servidor chega de volta.
+    if (autorId && autorId === eu.id) return;
+    atualizarChecklistLocal(taskId, (lista) => [...lista, item]);
+  });
   socket.on("checklist:item-updated", ({ taskId, item }) => atualizarChecklistLocal(taskId, (lista) => lista.map((i) => (i.id === item.id ? item : i))));
   socket.on("checklist:item-deleted", ({ taskId, itemId }) => atualizarChecklistLocal(taskId, (lista) => lista.filter((i) => i.id !== itemId)));
 
@@ -525,6 +562,40 @@ function conectarSocket() {
     const feed = document.getElementById("channel-feed");
     feed.insertAdjacentHTML("beforeend", criarBolhaCanal(m));
     feed.scrollTop = feed.scrollHeight;
+  });
+
+  socket.on("channel:message-edited", ({ id, content }) => {
+    const el = document.querySelector(`.channel-msg[data-msg-id="${id}"]`);
+    if (!el) return;
+    el.dataset.content = content;
+    const bubble = el.querySelector(".bubble");
+    if (bubble) bubble.innerHTML = escaparHtml(content);
+    let tag = el.querySelector(".channel-edited-tag");
+    const meta = el.querySelector(".meta");
+    if (meta && !tag) {
+      tag = document.createElement("span");
+      tag.className = "channel-edited-tag";
+      tag.textContent = "(editada)";
+      meta.appendChild(tag);
+    }
+  });
+
+  socket.on("channel:message-deleted", ({ id, escopo }) => {
+    if (escopo !== "todos") return; // "para mim" só afeta quem pediu, via resposta direta do pedido
+    const el = document.querySelector(`.channel-msg[data-msg-id="${id}"]`);
+    if (!el) return;
+    el.classList.add("eliminada");
+    const bubble = el.querySelector(".bubble, .channel-media-img, .channel-audio-player, .channel-file-chip");
+    if (bubble) bubble.outerHTML = `<div class="bubble">Mensagem eliminada</div>`;
+    el.querySelector(".channel-msg-acoes")?.remove();
+  });
+
+  socket.on("channel:digitando", ({ user }) => {
+    if (document.getElementById("view-conversa").style.display === "none") return;
+    const ind = document.getElementById("channel-digitando");
+    ind.innerHTML = `<span class="typing-dots"><span></span><span></span><span></span></span>${user} está a escrever…`;
+    clearTimeout(timeoutDigitandoCanal);
+    timeoutDigitandoCanal = setTimeout(() => (ind.innerHTML = ""), 2200);
   });
 
   socket.on("column:created", (coluna) => {
@@ -701,6 +772,10 @@ async function abrirModalDetalhe(taskId) {
     document.getElementById("et-prioridade").value = tarefaAtiva.priority;
     document.getElementById("et-responsavel").value = tarefaAtiva.assignee_id || "";
     document.getElementById("et-prazo").value = tarefaAtiva.due_date ? tarefaAtiva.due_date.substring(0, 10) : "";
+    // Só responsáveis do projeto/administradores podem mudar quem vê a tarefa
+    const campoVisibilidade = document.getElementById("campo-et-visibilidade");
+    campoVisibilidade.style.display = souDonoDoProjeto() ? "block" : "none";
+    document.getElementById("et-visibilidade").value = tarefaAtiva.visibility || "equipa";
   } else {
     document.getElementById("det-titulo").textContent = tarefaAtiva.title;
     document.getElementById("det-meta").textContent =
@@ -716,12 +791,18 @@ async function abrirModalDetalhe(taskId) {
   const formChecklist = document.getElementById("form-checklist");
   if (formChecklist) formChecklist.style.display = souDonoDoProjeto() ? "flex" : "none";
 
+  // Uma tarefa visível a toda a equipa pode ser vista por qualquer membro,
+  // mas só quem está diretamente envolvido nela (atribuído, responsável
+  // extra, responsável do projeto ou admin) pode comentar ou enviar
+  // ficheiros — os restantes ficam em modo só-leitura.
+  const podeInteragir = podeInteragirComTarefaAtiva();
+  document.getElementById("aviso-so-leitura-tarefa").style.display = podeInteragir ? "none" : "block";
+
   try {
     anexosAtivos = await api.get(`/api/tasks/${taskId}/anexos`);
     renderizarAnexos();
-    // Quem já é o responsável do projeto não precisa de "enviar a si próprio"
     const formAnexo = document.getElementById("form-anexo");
-    if (formAnexo) formAnexo.style.display = souDonoDoProjeto() ? "none" : "flex";
+    if (formAnexo) formAnexo.style.display = podeInteragir ? "flex" : "none";
   } catch (err) {
     console.error("Erro ao carregar anexos:", err);
   }
@@ -729,8 +810,23 @@ async function abrirModalDetalhe(taskId) {
   const comentarios = await api.get(`/api/comments/tarefa/${taskId}`);
   document.getElementById("lista-comentarios").innerHTML = "";
   comentarios.forEach(adicionarComentarioNaLista);
+  const formComentario = document.getElementById("form-comentario");
+  if (formComentario) formComentario.style.display = podeInteragir ? "flex" : "none";
 
   document.getElementById("overlay-detalhe").classList.add("open");
+}
+
+// Mesma regra do servidor (ver src/lib/permissions.js: podeInteragirComTarefa),
+// calculada aqui só para decidir o que mostrar — o servidor é sempre quem
+// decide de verdade, isto é só para não mostrar um formulário que o pedido
+// a seguir recusaria com 403.
+function podeInteragirComTarefaAtiva() {
+  if (!tarefaAtiva) return false;
+  if (eu.role === "admin") return true;
+  if (souDonoDoProjeto()) return true;
+  if (tarefaAtiva.assignee_id === eu.id) return true;
+  if (tarefaAtiva.sou_responsavel_tarefa) return true;
+  return false;
 }
 function fecharModalDetalhe() {
   document.getElementById("overlay-detalhe").classList.remove("open");
@@ -748,17 +844,19 @@ function renderizarEtiquetasDetalhe() {
       <span class="chip-toggle-det" data-id="${l.id}" style="cursor:pointer;user-select:none">${l.name}</span>
       ${podeGerirEtiquetas ? `<span data-del-label="${l.id}" style="cursor:pointer;opacity:0.7">✕</span>` : ""}
     </span>
-  `).join("") + `<span id="nova-etiqueta-btn" style="cursor:pointer;user-select:none;background:transparent;color:var(--ink-faint);border:1px dashed var(--border);font-size:11px;font-weight:700;padding:3px 9px;border-radius:20px">+ Nova etiqueta</span>`;
+  `).join("") + (podeGerirEtiquetas ? `<span id="nova-etiqueta-btn" style="cursor:pointer;user-select:none;background:transparent;color:var(--ink-faint);border:1px dashed var(--border);font-size:11px;font-weight:700;padding:3px 9px;border-radius:20px">+ Nova etiqueta</span>` : "");
 
-  document.getElementById("nova-etiqueta-btn").addEventListener("click", async () => {
-    const nome = prompt("Nome da nova etiqueta (ex: Urgente, Backend, Design):");
-    if (!nome || !nome.trim()) return;
-    const cor = paletaCores[etiquetasProjeto.length % paletaCores.length];
-    const label = await api.post(`/api/projects/${projectId}/etiquetas`, { name: nome.trim(), color: cor });
-    etiquetasProjeto.push(label);
-    renderizarSeletorEtiquetasFiltro();
-    renderizarEtiquetasDetalhe();
-  });
+  if (podeGerirEtiquetas) {
+    document.getElementById("nova-etiqueta-btn").addEventListener("click", async () => {
+      const nome = prompt("Nome da nova etiqueta (ex: Urgente, Backend, Design):");
+      if (!nome || !nome.trim()) return;
+      const cor = paletaCores[etiquetasProjeto.length % paletaCores.length];
+      const label = await api.post(`/api/projects/${projectId}/etiquetas`, { name: nome.trim(), color: cor });
+      etiquetasProjeto.push(label);
+      renderizarSeletorEtiquetasFiltro();
+      renderizarEtiquetasDetalhe();
+    });
+  }
 
   container.querySelectorAll(".chip-toggle-det").forEach((chip) => {
     chip.addEventListener("click", async () => {
@@ -836,19 +934,38 @@ function renderizarChecklist() {
   const feitos = checklistAtiva.filter((i) => i.is_done).length;
   document.getElementById("det-checklist-progresso").textContent = total > 0 ? `${feitos} de ${total} concluídos` : "Sem itens ainda.";
 
+  // Só responsáveis do projeto ou administradores podem marcar/remover itens
+  const podeMarcar = souDonoDoProjeto();
+
   document.getElementById("lista-checklist").innerHTML = checklistAtiva.map((i) => `
     <div style="display:flex;align-items:center;gap:9px;padding:6px 2px">
-      <input type="checkbox" data-id="${i.id}" ${i.is_done ? "checked" : ""} style="width:16px;height:16px;accent-color:var(--cyan)" />
+      <input type="checkbox" data-id="${i.id}" ${i.is_done ? "checked" : ""} ${podeMarcar ? "" : "disabled"} style="width:16px;height:16px;accent-color:var(--cyan)" />
       <span style="flex:1;font-size:13.5px;${i.is_done ? "text-decoration:line-through;color:var(--ink-faint)" : ""}">${i.content}</span>
-      <span data-del="${i.id}" style="cursor:pointer;color:var(--ink-faint);font-size:13px">✕</span>
+      ${podeMarcar ? `<span data-del="${i.id}" style="cursor:pointer;color:var(--ink-faint);font-size:13px">✕</span>` : ""}
     </div>
   `).join("");
 
+  if (!podeMarcar) return;
   document.querySelectorAll("#lista-checklist input[type=checkbox]").forEach((cb) => {
-    cb.addEventListener("change", () => api.patch(`/api/tasks/checklist/${cb.dataset.id}`, { is_done: cb.checked }));
+    cb.addEventListener("change", async () => {
+      try {
+        await api.patch(`/api/tasks/checklist/${cb.dataset.id}`, { is_done: cb.checked });
+      } catch (err) {
+        cb.checked = !cb.checked;
+        mostrarToast(err.message);
+      }
+    });
   });
   document.querySelectorAll("#lista-checklist [data-del]").forEach((el) => {
-    el.addEventListener("click", () => api.del(`/api/tasks/checklist/${el.dataset.del}`));
+    el.addEventListener("click", async () => {
+      try {
+        await api.del(`/api/tasks/checklist/${el.dataset.del}`);
+        checklistAtiva = checklistAtiva.filter((i) => i.id !== el.dataset.del);
+        renderizarChecklist();
+      } catch (err) {
+        mostrarToast(err.message);
+      }
+    });
   });
 }
 
@@ -897,20 +1014,6 @@ function adicionarComentarioNaLista(c) {
   });
 }
 
-// ---------------- Atividade recente ----------------
-async function carregarAtividade() {
-  const eventos = await api.get(`/api/projects/${projectId}/atividade`);
-  const rotulos = {
-    "task.created": "criou a tarefa",
-    "task.updated": "atualizou a tarefa",
-    "task.moved": "moveu uma tarefa",
-    "comment.created": "comentou numa tarefa",
-  };
-  document.getElementById("lista-atividade").innerHTML = eventos.slice(0, 12).map((e) => `
-    <div><strong style="color:var(--ink-dim)">${e.user_name || "Alguém"}</strong> ${rotulos[e.action] || e.action}</div>
-  `).join("") || "<div>Sem atividade ainda.</div>";
-}
-
 // ---------------- Formulários ----------------
 function ligarFormularios() {
   document.getElementById("form-coluna").addEventListener("submit", async (e) => {
@@ -939,38 +1042,57 @@ function ligarFormularios() {
     }
   });
 
+  let aCriarTarefa = false;
   document.getElementById("form-nova-tarefa").addEventListener("submit", async (e) => {
     e.preventDefault();
-    const nova = await api.post("/api/tasks", {
-      project_id: projectId,
-      column_id: document.getElementById("nt-coluna").value,
-      title: document.getElementById("nt-titulo").value,
-      priority: document.getElementById("nt-prioridade").value,
-      assignee_id: document.getElementById("nt-responsavel").value || null,
-      due_date: document.getElementById("nt-prazo").value || null,
-    });
-    if (etiquetasSelecionadasNaTarefaNova.size > 0) {
-      nova.labels = await api.put(`/api/tasks/${nova.id}/etiquetas`, { label_ids: [...etiquetasSelecionadasNaTarefaNova] });
+    // Evita criar a tarefa em duplicado se a pessoa clicar/submeter duas vezes
+    // seguidas antes do primeiro pedido terminar.
+    if (aCriarTarefa) return;
+    aCriarTarefa = true;
+    const botao = e.target.querySelector("button[type=submit]");
+    if (botao) botao.disabled = true;
+    try {
+      const nova = await api.post("/api/tasks", {
+        project_id: projectId,
+        column_id: document.getElementById("nt-coluna").value,
+        title: document.getElementById("nt-titulo").value,
+        priority: document.getElementById("nt-prioridade").value,
+        assignee_id: document.getElementById("nt-responsavel").value || null,
+        due_date: document.getElementById("nt-prazo").value || null,
+        visibility: document.getElementById("nt-visibilidade").value,
+      });
+      if (etiquetasSelecionadasNaTarefaNova.size > 0) {
+        nova.labels = await api.put(`/api/tasks/${nova.id}/etiquetas`, { label_ids: [...etiquetasSelecionadasNaTarefaNova] });
+      }
+      for (const texto of checklistNovaTarefa) {
+        await api.post(`/api/tasks/${nova.id}/checklist`, { content: texto });
+      }
+      estado.tarefas.push(nova);
+      renderizarQuadro();
+      fecharModalTarefa();
+    } catch (err) {
+      mostrarToast(err.message);
+    } finally {
+      aCriarTarefa = false;
+      if (botao) botao.disabled = false;
     }
-    for (const texto of checklistNovaTarefa) {
-      await api.post(`/api/tasks/${nova.id}/checklist`, { content: texto });
-    }
-    estado.tarefas.push(nova);
-    renderizarQuadro();
-    fecharModalTarefa();
   });
 
   document.getElementById("form-editar-tarefa").addEventListener("submit", async (e) => {
     e.preventDefault();
     if (!tarefaAtiva) return;
     try {
-      await api.patch(`/api/tasks/${tarefaAtiva.id}`, {
+      const payload = {
         title: document.getElementById("et-titulo").value,
         description: document.getElementById("et-descricao").value,
         priority: document.getElementById("et-prioridade").value,
         assignee_id: document.getElementById("et-responsavel").value || null,
         due_date: document.getElementById("et-prazo").value || null,
-      });
+      };
+      if (document.getElementById("campo-et-visibilidade").style.display !== "none") {
+        payload.visibility = document.getElementById("et-visibilidade").value;
+      }
+      await api.patch(`/api/tasks/${tarefaAtiva.id}`, payload);
       mostrarToast("Tarefa atualizada.");
       fecharModalDetalhe();
     } catch (err) {
@@ -1004,14 +1126,30 @@ function ligarFormularios() {
     if (tarefaAtiva) socket.emit("comment:digitando", { projectId, taskId: tarefaAtiva.id });
   });
 
+  document.getElementById("channel-input").addEventListener("input", () => {
+    socket.emit("channel:digitando", { projectId });
+  });
+
+  let aAdicionarItemChecklist = false;
   document.getElementById("form-checklist").addEventListener("submit", async (e) => {
     e.preventDefault();
     const input = document.getElementById("input-checklist");
     if (!input.value.trim() || !tarefaAtiva) return;
-    const item = await api.post(`/api/tasks/${tarefaAtiva.id}/checklist`, { content: input.value.trim() });
-    checklistAtiva.push(item);
-    renderizarChecklist();
+    // Evita adicionar o item em duplicado com um duplo-clique/duplo-Enter
+    if (aAdicionarItemChecklist) return;
+    aAdicionarItemChecklist = true;
+    const texto = input.value.trim();
     input.value = "";
+    try {
+      const item = await api.post(`/api/tasks/${tarefaAtiva.id}/checklist`, { content: texto });
+      checklistAtiva.push(item);
+      renderizarChecklist();
+    } catch (err) {
+      mostrarToast(err.message);
+      input.value = texto;
+    } finally {
+      aAdicionarItemChecklist = false;
+    }
   });
 
   document.getElementById("form-anexo")?.addEventListener("submit", async (e) => {
@@ -1182,29 +1320,148 @@ async function carregarCanal() {
   feed.scrollTop = feed.scrollHeight;
 }
 
+function escaparHtml(texto) {
+  const div = document.createElement("div");
+  div.textContent = texto ?? "";
+  return div.innerHTML;
+}
+
 function criarBolhaCanal(m) {
   const minha = m.user_id === eu?.id;
+  const eliminada = !!m.deleted_at;
   let conteudo = "";
   const urlComToken = m.url ? `${m.url}?token=${encodeURIComponent(sessao.obterToken())}` : null;
 
-  if (m.type === "imagem") {
-    conteudo = `<img class="channel-media-img" src="${urlComToken}" alt="${m.file_name || "imagem"}" onclick="window.open('${urlComToken}', '_blank')" />`;
+  if (eliminada) {
+    conteudo = `<div class="bubble">Mensagem eliminada</div>`;
+  } else if (m.type === "imagem") {
+    conteudo = `<img class="channel-media-img" src="${urlComToken}" alt="${escaparHtml(m.file_name || "imagem")}" onclick="window.open('${urlComToken}', '_blank')" />`;
   } else if (m.type === "audio") {
     conteudo = `<audio class="channel-audio-player" controls src="${urlComToken}"></audio>`;
   } else if (m.type === "ficheiro") {
-    conteudo = `<a class="channel-file-chip" href="${urlComToken}" target="_blank" rel="noopener">📎 ${m.file_name} <span style="color:var(--ink-faint);margin-left:auto">${formatarTamanhoFicheiro(m.file_size || 0)}</span></a>`;
+    conteudo = `<a class="channel-file-chip" href="${urlComToken}" target="_blank" rel="noopener">📎 ${escaparHtml(m.file_name)} <span style="color:var(--ink-faint);margin-left:auto">${formatarTamanhoFicheiro(m.file_size || 0)}</span></a>`;
   } else {
-    conteudo = `<div class="bubble">${m.content}</div>`;
+    conteudo = `<div class="bubble">${escaparHtml(m.content)}</div>`;
   }
 
-  return `
-    <div class="channel-msg ${minha ? "mine" : ""}">
-      <div class="avatar" style="width:28px;height:28px;font-size:11px;background:${m.avatar_color || corPara(m.user_id)}">${iniciais(m.autor_nome)}</div>
-      <div>
-        <div class="meta">${minha ? "Você" : m.autor_nome} · ${new Date(m.created_at).toLocaleString("pt-PT", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}</div>
-        ${conteudo}
+  // Ações: copiar/editar só fazem sentido em mensagens de texto ainda não
+  // eliminadas; eliminar está sempre disponível (a própria pessoa escolhe
+  // depois se é só para si ou para todos — "para todos" só é aceite pelo
+  // servidor se for o autor ou um responsável do projeto/admin).
+  const podeEliminarTodos = minha || souDonoDoProjeto();
+  const acoes = eliminada ? "" : `
+    <div class="channel-msg-acoes">
+      <button type="button" class="channel-msg-acoes-btn" onclick="alternarMenuMensagem('${m.id}')" title="Mais ações">⋯</button>
+      <div class="channel-msg-menu">
+        ${m.type === "texto" ? `<div class="channel-msg-menu-item" onclick="copiarMensagem('${m.id}')">📋 Copiar</div>` : ""}
+        ${minha && m.type === "texto" ? `<div class="channel-msg-menu-item" onclick="iniciarEdicaoMensagem('${m.id}')">✏️ Editar</div>` : ""}
+        <div class="channel-msg-menu-item perigo" onclick="pedirEliminarMensagem('${m.id}', ${podeEliminarTodos})">🗑️ Eliminar</div>
       </div>
     </div>`;
+
+  return `
+    <div class="channel-msg ${minha ? "mine" : ""} ${eliminada ? "eliminada" : ""}" data-msg-id="${m.id}" data-content="${escaparHtml(m.content || "")}">
+      <div class="avatar" style="width:28px;height:28px;font-size:11px;background:${m.avatar_color || corPara(m.user_id)}">${iniciais(m.autor_nome)}</div>
+      <div style="flex:1;min-width:0">
+        <div class="meta">${minha ? "Você" : m.autor_nome} · ${new Date(m.created_at).toLocaleString("pt-PT", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}${m.edited_at && !eliminada ? `<span class="channel-edited-tag">(editada)</span>` : ""}</div>
+        ${conteudo}
+      </div>
+      ${acoes}
+    </div>`;
+}
+
+// Fecha qualquer menu de mensagem aberto ao clicar fora dele
+document.addEventListener("click", (e) => {
+  if (e.target.closest(".channel-msg-acoes")) return;
+  document.querySelectorAll(".channel-msg.menu-aberto").forEach((el) => el.classList.remove("menu-aberto"));
+});
+
+function alternarMenuMensagem(id) {
+  const el = document.querySelector(`.channel-msg[data-msg-id="${id}"]`);
+  if (!el) return;
+  const jaAberto = el.classList.contains("menu-aberto");
+  document.querySelectorAll(".channel-msg.menu-aberto").forEach((e) => e.classList.remove("menu-aberto"));
+  if (!jaAberto) el.classList.add("menu-aberto");
+}
+
+async function copiarMensagem(id) {
+  const el = document.querySelector(`.channel-msg[data-msg-id="${id}"]`);
+  if (!el) return;
+  try {
+    await navigator.clipboard.writeText(el.dataset.content || "");
+    mostrarToast("Mensagem copiada.");
+  } catch {
+    mostrarToast("Não foi possível copiar a mensagem.");
+  }
+  el.classList.remove("menu-aberto");
+}
+
+function iniciarEdicaoMensagem(id) {
+  const el = document.querySelector(`.channel-msg[data-msg-id="${id}"]`);
+  if (!el) return;
+  el.classList.remove("menu-aberto");
+  const bubble = el.querySelector(".bubble");
+  if (!bubble) return;
+  const textoAtual = el.dataset.content || "";
+  bubble.outerHTML = `
+    <div class="bubble channel-msg-edicao">
+      <input type="text" id="edicao-${id}" value="${escaparHtml(textoAtual)}" />
+      <button type="button" class="btn btn-primary" onclick="guardarEdicaoMensagem('${id}')">Guardar</button>
+      <button type="button" class="btn btn-ghost" onclick="cancelarEdicaoMensagem('${id}')">Cancelar</button>
+    </div>`;
+  document.getElementById(`edicao-${id}`)?.focus();
+}
+
+function cancelarEdicaoMensagem(id) {
+  const el = document.querySelector(`.channel-msg[data-msg-id="${id}"]`);
+  if (!el) return;
+  const edicao = el.querySelector(".channel-msg-edicao");
+  if (edicao) edicao.outerHTML = `<div class="bubble">${escaparHtml(el.dataset.content || "")}</div>`;
+}
+
+async function guardarEdicaoMensagem(id) {
+  const input = document.getElementById(`edicao-${id}`);
+  if (!input) return;
+  const texto = input.value.trim();
+  if (!texto) { mostrarToast("A mensagem não pode ficar vazia."); return; }
+  try {
+    await api.patch(`/api/projects/mensagens/${id}`, { content: texto });
+    // A própria edição chega de volta via socket ("channel:message-edited"),
+    // que já atualiza a bolha — não é preciso repetir aqui.
+  } catch (err) {
+    mostrarToast(err.message);
+  }
+}
+
+let mensagemParaEliminar = null;
+function pedirEliminarMensagem(id, podeTodos) {
+  const el = document.querySelector(`.channel-msg[data-msg-id="${id}"]`);
+  if (el) el.classList.remove("menu-aberto");
+  mensagemParaEliminar = { id, podeTodos };
+  document.querySelector('#overlay-eliminar-mensagem [onclick="confirmarEliminarMensagem(\'todos\')"]').style.display = podeTodos ? "block" : "none";
+  document.getElementById("overlay-eliminar-mensagem").classList.add("open");
+}
+function fecharModalEliminarMensagem() {
+  document.getElementById("overlay-eliminar-mensagem").classList.remove("open");
+  mensagemParaEliminar = null;
+}
+async function confirmarEliminarMensagem(escopo) {
+  if (!mensagemParaEliminar) return;
+  const { id } = mensagemParaEliminar;
+  try {
+    await api.del(`/api/projects/mensagens/${id}?escopo=${escopo}`);
+    if (escopo === "mim") {
+      // Só esta pessoa deixa de ver a mensagem — os outros continuam a vê-la,
+      // por isso não há evento de socket para isto, só removemos localmente.
+      document.querySelector(`.channel-msg[data-msg-id="${id}"]`)?.remove();
+    }
+    // "todos" é aplicado a toda a gente (incluindo quem pediu) via socket
+    // ("channel:message-deleted"), por isso não mexemos aqui para evitar
+    // fazer o trabalho em duplicado.
+  } catch (err) {
+    mostrarToast(err.message);
+  }
+  fecharModalEliminarMensagem();
 }
 
 async function enviarMensagemCanal(e) {

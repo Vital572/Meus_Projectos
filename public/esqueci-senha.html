@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="pt" data-bs-theme="dark">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Recuperar acesso — GPI Track</title>
+<link rel="icon" href="/img/unikivi-logo.png" />
+<link rel="stylesheet" href="/css/styles.css" />
+</head>
+<body>
+  <div class="auth-shell">
+    <div class="auth-hero">
+      <a href="/" style="display:inline-flex;align-items:center;gap:10px;text-decoration:none;color:var(--ink);margin-bottom:22px">
+        <img src="/img/unikivi-logo.png" alt="Unikivi" style="width:36px;height:36px;border-radius:50%;background:#fff;padding:2px" />
+        <b style="font-size:14.5px">GPI Track</b>
+      </a>
+      <div class="eyebrow">GPI · Uíge, Angola</div>
+      <h1>O progresso da sua equipa,<br/>a acontecer ao vivo.</h1>
+      <p>Protótipo académico de ferramenta de gestão de projetos colaborativa,
+         desenvolvido para o estudo de acompanhamento de equipas em regime de
+         home office.</p>
+    </div>
+    <div class="auth-panel">
+      <div class="auth-card">
+        <h2>Recuperar a sua conta</h2>
+        <div class="sub">Indique o e-mail da sua conta. Enviamos-lhe uma ligação para escolher uma nova password.</div>
+        <div class="error-box" id="erro"></div>
+        <div class="success-box" id="sucesso"></div>
+        <form id="form-esqueci">
+          <div class="field">
+            <label>E-mail</label>
+            <input type="email" id="email" placeholder="voce@equipa.ao" required autofocus />
+          </div>
+          <button class="btn btn-primary" type="submit" id="btn-enviar">Enviar ligação de recuperação</button>
+        </form>
+        <div class="hint" style="margin-top:16px"><a class="link-discreto" href="/entrar.html">← Voltar a entrar</a></div>
+      </div>
+    </div>
+  </div>
+  <script src="/js/api.js"></script>
+  <script>
+    document.getElementById("form-esqueci").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const erro = document.getElementById("erro");
+      const ok = document.getElementById("sucesso");
+      const btn = document.getElementById("btn-enviar");
+      erro.style.display = ok.style.display = "none";
+      btn.disabled = true;
+      try {
+        const r = await api.post("/api/auth/esqueci-senha", { email: document.getElementById("email").value });
+        ok.textContent = r.mensagem + " Verifique também a pasta de spam. A ligação é válida durante 60 minutos.";
+        ok.style.display = "block";
+        // Evita pedidos repetidos seguidos: volta a ativar o botão após 60 segundos.
+        setTimeout(() => (btn.disabled = false), 60000);
+      } catch (err) {
+        erro.textContent = err.message;
+        erro.style.display = "block";
+        btn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

@@ -4,6 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Administração — GPI Track</title>
+<script>(function(){var t=localStorage.getItem("gpitrack_tema")||"escuro";document.documentElement.setAttribute("data-theme",t);document.documentElement.setAttribute("data-bs-theme",t==="claro"?"light":"dark");})();</script>
 <link rel="stylesheet" href="/css/styles.css" />
 <style>
   .chart-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 18px; margin-top: 24px; }
@@ -15,6 +16,7 @@
 </head>
 <body>
   <div class="app-shell">
+    <div class="sidebar-backdrop" id="sidebar-backdrop"></div>
     <aside class="sidebar">
       <div class="brand">
         <img src="/img/unikivi-logo.png" alt="Unikivi" class="brand-mark" style="background:#fff;object-fit:contain;border-radius:50%;padding:2px" />
@@ -38,11 +40,17 @@
 
     <main class="main">
       <div class="topbar">
-        <div>
-          <h1>Administração</h1>
-          <div class="sub">Gestão de utilizadores e visão geral da plataforma GPI Track.</div>
+        <div style="display:flex;align-items:center;gap:12px">
+          <button class="icon-toggle-btn btn-sidebar" title="Mostrar/esconder barra lateral">☰</button>
+          <div>
+            <h1>Administração</h1>
+            <div class="sub">Gestão de utilizadores e visão geral da plataforma GPI Track.</div>
+          </div>
         </div>
-        <div id="ancora-sino"></div>
+        <div class="topbar-actions">
+          <button class="icon-toggle-btn btn-tema" title="Alternar tema claro/escuro">☀️</button>
+          <div id="ancora-sino"></div>
+        </div>
       </div>
 
       <!-- Visão geral -->
@@ -255,6 +263,7 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
   <script src="/js/api.js"></script>
   <script src="/js/notifications.js"></script>
+  <script src="/js/ui-shell.js"></script>
   <script src="/js/admin.js"></script>
 </body>
 </html>

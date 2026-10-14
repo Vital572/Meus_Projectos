@@ -4,10 +4,12 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Os meus projetos — GPI Track</title>
+<script>(function(){var t=localStorage.getItem("gpitrack_tema")||"escuro";document.documentElement.setAttribute("data-theme",t);document.documentElement.setAttribute("data-bs-theme",t==="claro"?"light":"dark");})();</script>
 <link rel="stylesheet" href="/css/styles.css" />
 </head>
 <body>
   <div class="app-shell">
+    <div class="sidebar-backdrop" id="sidebar-backdrop"></div>
     <aside class="sidebar">
       <div class="brand">
         <img src="/img/unikivi-logo.png" alt="Unikivi" class="brand-mark" style="background:#fff;object-fit:contain;border-radius:50%;padding:2px" />
@@ -27,11 +29,17 @@
 
     <main class="main">
       <div class="topbar">
-        <div>
-          <h1>Os meus projetos</h1>
-          <div class="sub">Selecione um projeto para abrir o quadro em tempo real.</div>
+        <div style="display:flex;align-items:center;gap:12px">
+          <button class="icon-toggle-btn btn-sidebar" title="Mostrar/esconder barra lateral">☰</button>
+          <div>
+            <h1>Os meus projetos</h1>
+            <div class="sub">Selecione um projeto para abrir o quadro em tempo real.</div>
+          </div>
         </div>
-        <div id="ancora-sino"></div>
+        <div class="topbar-actions">
+          <button class="icon-toggle-btn btn-tema" title="Alternar tema claro/escuro">☀️</button>
+          <div id="ancora-sino"></div>
+        </div>
       </div>
       <div id="bloco-convites" style="display:none;margin-bottom:26px"></div>
       <div id="bloco-aprovar-convites" style="display:none;margin-bottom:26px"></div>
@@ -61,6 +69,7 @@
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
   <script src="/js/api.js"></script>
   <script src="/js/notifications.js"></script>
+  <script src="/js/ui-shell.js"></script>
   <script>
     let eu = null;
 
@@ -172,8 +181,11 @@
 
       projetos.forEach((p) => {
         const souResponsavel = eu.role === "admin" || p.meu_papel === "responsavel";
+        // Um responsável pode tanto eliminar o projeto todo como sair dele (desde
+        // que fique outro responsável); um membro comum só pode sair.
         const acao = souResponsavel
-          ? `<span data-del-proj="${p.id}" data-nome="${p.name.replace(/"/g, "&quot;")}" style="cursor:pointer;color:var(--ink-faint)" title="Eliminar projeto">🗑️</span>`
+          ? `<span data-del-proj="${p.id}" data-nome="${p.name.replace(/"/g, "&quot;")}" style="cursor:pointer;color:var(--ink-faint)" title="Eliminar projeto">🗑️</span>
+             <span data-sair-proj="${p.id}" style="cursor:pointer;color:var(--ink-faint);margin-left:8px" title="Sair do projeto">🚪</span>`
           : `<span data-sair-proj="${p.id}" style="cursor:pointer;color:var(--ink-faint)" title="Sair do projeto">🚪</span>`;
         grid.innerHTML += `
           <div class="project-card" onclick="abrirProjeto('${p.id}')">

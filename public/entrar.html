@@ -43,10 +43,18 @@
             </div>
             <div class="field">
               <label>Password</label>
-              <input type="password" id="login-password" placeholder="••••••••" required />
+              <div class="campo-senha">
+                <input type="password" id="login-password" placeholder="••••••••" required />
+                <button type="button" class="ver-senha" data-alvo="login-password" title="Mostrar/esconder password">👁</button>
+              </div>
             </div>
+            <div class="linha-esqueci"><a class="link-discreto" href="/esqueci-senha.html">Esqueceu a password?</a></div>
             <button class="btn btn-primary" type="submit">Entrar</button>
           </form>
+          <div id="bloco-google-login" style="display:none">
+            <div class="divisor-ou">ou</div>
+            <div class="google-slot" id="google-login"></div>
+          </div>
           <div class="hint">Conta de demonstração: vital@ukv.ao / 123456</div>
         </div>
 
@@ -65,10 +73,22 @@
             </div>
             <div class="field">
               <label>Password</label>
-              <input type="password" id="reg-password" placeholder="Mínimo 6 caracteres" minlength="6" required />
+              <div class="campo-senha">
+                <input type="password" id="reg-password" placeholder="Crie uma password segura" maxlength="128" autocomplete="new-password" required />
+                <button type="button" class="ver-senha" data-alvo="reg-password" title="Mostrar/esconder password">👁</button>
+              </div>
             </div>
-            <button class="btn btn-primary" type="submit">Criar conta</button>
+            <div class="senha-medidor" id="medidor-registo"></div>
+            <div class="field">
+              <label>Confirmar password</label>
+              <input type="password" id="reg-password2" placeholder="Repita a password" maxlength="128" autocomplete="new-password" required />
+            </div>
+            <button class="btn btn-primary" type="submit" id="btn-criar-conta" disabled>Criar conta</button>
           </form>
+          <div id="bloco-google-registo" style="display:none">
+            <div class="divisor-ou">ou</div>
+            <div class="google-slot" id="google-registo"></div>
+          </div>
         </div>
       </div>
     </div>
@@ -76,6 +96,7 @@
 
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
   <script src="/js/api.js"></script>
+  <script src="/js/password-strength.js"></script>
   <script>
     document.querySelectorAll(".tab-btn").forEach((btn) => {
       btn.addEventListener("click", () => {
@@ -108,10 +129,78 @@
       }
     });
 
+    // ---- Barra de força da password ----
+    let senhaAceite = false;
+    ligarMedidorSenha("reg-password", "medidor-registo", (r) => {
+      senhaAceite = r.aceite;
+      document.getElementById("btn-criar-conta").disabled = !r.aceite;
+    });
+
+    // ---- Mostrar/esconder password ----
+    document.querySelectorAll(".ver-senha").forEach((b) => {
+      b.addEventListener("click", () => {
+        const campo = document.getElementById(b.dataset.alvo);
+        campo.type = campo.type === "password" ? "text" : "password";
+      });
+    });
+
+    // ---- Entrar com o Google ----
+    // O botão só aparece se o servidor tiver GOOGLE_CLIENT_ID configurado.
+    async function iniciarGoogle() {
+      let clientId = null;
+      try { clientId = (await api.get("/api/auth/config")).googleClientId; } catch {}
+      if (!clientId) return;
+
+      await new Promise((resolve, reject) => {
+        const sc = document.createElement("script");
+        sc.src = "https://accounts.google.com/gsi/client";
+        sc.async = true;
+        sc.onload = resolve;
+        sc.onerror = reject;
+        document.head.appendChild(sc);
+      }).catch(() => null);
+      if (!window.google?.accounts?.id) return;
+
+      google.accounts.id.initialize({
+        client_id: clientId,
+        callback: async ({ credential }) => {
+          const painelRegisto = document.getElementById("painel-registo").style.display !== "none";
+          const erroBox = document.getElementById(painelRegisto ? "erro-registo" : "erro-login");
+          erroBox.style.display = "none";
+          try {
+            const { token, novo } = await api.post("/api/auth/google", { credential });
+            sessao.guardarToken(token);
+            window.location.href = novo ? "/onboarding.html" : "/projetos.html";
+          } catch (err) {
+            erroBox.textContent = err.message;
+            erroBox.style.display = "block";
+          }
+        },
+      });
+      ["login", "registo"].forEach((k) => {
+        document.getElementById("bloco-google-" + k).style.display = "block";
+        google.accounts.id.renderButton(document.getElementById("google-" + k), {
+          theme: "outline", size: "large", shape: "pill", width: 300,
+          text: k === "registo" ? "signup_with" : "signin_with", locale: "pt-PT",
+        });
+      });
+    }
+    iniciarGoogle();
+
     document.getElementById("form-registo").addEventListener("submit", async (e) => {
       e.preventDefault();
       const erroBox = document.getElementById("erro-registo");
       erroBox.style.display = "none";
+      if (!senhaAceite) {
+        erroBox.textContent = "Escolha uma password mais forte (pelo menos \"Razoável\").";
+        erroBox.style.display = "block";
+        return;
+      }
+      if (document.getElementById("reg-password").value !== document.getElementById("reg-password2").value) {
+        erroBox.textContent = "As duas passwords não coincidem.";
+        erroBox.style.display = "block";
+        return;
+      }
       try {
         const { token } = await api.post("/api/auth/registar", {
           name: document.getElementById("reg-nome").value,

@@ -38,7 +38,12 @@ app.set("io", io);
 // scripts e folhas de estilo de CDNs (Bootstrap, Chart.js, Socket.IO, ícones) —
 // ativar o CSP sem configurar essas origens bloquearia tudo. Ao colocar isto
 // "na nuvem" a sério, vale a pena vir aqui configurar o CSP com as origens exatas.
-app.use(helmet({ contentSecurityPolicy: false }));
+// "same-origin-allow-popups" é necessário para o popup do "Entrar com o Google"
+// (com o valor por defeito do helmet, "same-origin", o Google bloqueia o popup).
+app.use(helmet({
+  contentSecurityPolicy: false,
+  crossOriginOpenerPolicy: { policy: "same-origin-allow-popups" },
+}));
 app.use(compression());
 
 // Limita tentativas de login/registo para dificultar ataques de força bruta
@@ -51,6 +56,19 @@ const limitadorAutenticacao = rateLimit({
 });
 app.use("/api/auth/login", limitadorAutenticacao);
 app.use("/api/auth/registar", limitadorAutenticacao);
+app.use("/api/auth/google", limitadorAutenticacao);
+
+// Recuperação de conta: limite mais apertado (cada pedido pode gerar um e-mail).
+const limitadorRecuperacao = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { erro: "Demasiados pedidos de recuperação. Tente novamente dentro de alguns minutos." },
+});
+app.use("/api/auth/esqueci-senha", limitadorRecuperacao);
+app.use("/api/auth/redefinir-senha", limitadorRecuperacao);
+app.use("/api/auth/validar-token-recuperacao", limitadorRecuperacao);
 
 app.use(express.json());
 app.use(cookieParser());

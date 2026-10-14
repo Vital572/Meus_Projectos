@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="pt" data-bs-theme="dark">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Nova password — GPI Track</title>
+<link rel="icon" href="/img/unikivi-logo.png" />
+<link rel="stylesheet" href="/css/styles.css" />
+</head>
+<body>
+  <div class="auth-shell">
+    <div class="auth-hero">
+      <a href="/" style="display:inline-flex;align-items:center;gap:10px;text-decoration:none;color:var(--ink);margin-bottom:22px">
+        <img src="/img/unikivi-logo.png" alt="Unikivi" style="width:36px;height:36px;border-radius:50%;background:#fff;padding:2px" />
+        <b style="font-size:14.5px">GPI Track</b>
+      </a>
+      <div class="eyebrow">GPI · Uíge, Angola</div>
+      <h1>O progresso da sua equipa,<br/>a acontecer ao vivo.</h1>
+      <p>Protótipo académico de ferramenta de gestão de projetos colaborativa,
+         desenvolvido para o estudo de acompanhamento de equipas em regime de
+         home office.</p>
+    </div>
+    <div class="auth-panel">
+      <div class="auth-card">
+        <h2>Escolher nova password</h2>
+        <div class="sub" id="sub">A validar a ligação…</div>
+        <div class="error-box" id="erro"></div>
+        <div class="success-box" id="sucesso"></div>
+        <form id="form-redefinir" style="display:none">
+          <div class="field">
+            <label>Nova password</label>
+            <div class="campo-senha">
+              <input type="password" id="nova" placeholder="Crie uma password segura" maxlength="128" autocomplete="new-password" required />
+              <button type="button" class="ver-senha" data-alvo="nova" title="Mostrar/esconder password">👁</button>
+            </div>
+          </div>
+          <div class="senha-medidor" id="medidor"></div>
+          <div class="field">
+            <label>Confirmar nova password</label>
+            <input type="password" id="nova2" placeholder="Repita a password" maxlength="128" autocomplete="new-password" required />
+          </div>
+          <button class="btn btn-primary" type="submit" id="btn-guardar" disabled>Guardar nova password</button>
+        </form>
+        <div class="hint" style="margin-top:16px" id="rodape-links"><a class="link-discreto" href="/entrar.html">← Voltar a entrar</a></div>
+      </div>
+    </div>
+  </div>
+  <script src="/js/api.js"></script>
+  <script src="/js/password-strength.js"></script>
+  <script>
+    const token = new URLSearchParams(location.search).get("token");
+    const erro = document.getElementById("erro");
+    const ok = document.getElementById("sucesso");
+    const form = document.getElementById("form-redefinir");
+    let senhaAceite = false;
+
+    function mostrarInvalido() {
+      document.getElementById("sub").textContent = "";
+      erro.innerHTML = 'Esta ligação é inválida ou já expirou. <a class="link-discreto" href="/esqueci-senha.html">Pedir uma nova</a>.';
+      erro.style.display = "block";
+    }
+
+    (async () => {
+      if (!token) return mostrarInvalido();
+      try {
+        const { valido } = await api.post("/api/auth/validar-token-recuperacao", { token });
+        if (!valido) return mostrarInvalido();
+      } catch { return mostrarInvalido(); }
+      document.getElementById("sub").textContent = "Escolha uma password nova e segura para a sua conta.";
+      form.style.display = "block";
+      ligarMedidorSenha("nova", "medidor", (r) => {
+        senhaAceite = r.aceite;
+        document.getElementById("btn-guardar").disabled = !r.aceite;
+      });
+    })();
+
+    document.querySelectorAll(".ver-senha").forEach((b) => {
+      b.addEventListener("click", () => {
+        const campo = document.getElementById(b.dataset.alvo);
+        campo.type = campo.type === "password" ? "text" : "password";
+      });
+    });
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      erro.style.display = ok.style.display = "none";
+      if (!senhaAceite) { erro.textContent = "Escolha uma password mais forte (pelo menos \"Razoável\")."; erro.style.display = "block"; return; }
+      if (document.getElementById("nova").value !== document.getElementById("nova2").value) {
+        erro.textContent = "As duas passwords não coincidem."; erro.style.display = "block"; return;
+      }
+      try {
+        await api.post("/api/auth/redefinir-senha", { token, password: document.getElementById("nova").value });
+        form.style.display = "none";
+        document.getElementById("sub").textContent = "";
+        ok.textContent = "Password alterada com sucesso! A redirecionar para o início de sessão…";
+        ok.style.display = "block";
+        setTimeout(() => (location.href = "/entrar.html"), 2500);
+      } catch (err) {
+        erro.textContent = err.message;
+        erro.style.display = "block";
+      }
+    });
+  </script>
+</body>
+</html>

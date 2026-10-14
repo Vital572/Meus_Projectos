@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Espaço de Gestão — GPI Track</title>
 <link rel="icon" href="/img/unikivi-logo.png" />
+<script>(function(){var t=localStorage.getItem("gpitrack_tema")||"escuro";document.documentElement.setAttribute("data-theme",t);document.documentElement.setAttribute("data-bs-theme",t==="claro"?"light":"dark");})();</script>
 <link rel="stylesheet" href="/css/styles.css" />
 <style>
   .chart-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 18px; margin: 24px 0; }
@@ -16,6 +17,7 @@
 </head>
 <body>
   <div class="app-shell">
+    <div class="sidebar-backdrop" id="sidebar-backdrop"></div>
     <aside class="sidebar">
       <div class="brand">
         <img src="/img/unikivi-logo.png" alt="Unikivi" class="brand-mark" style="background:#fff;object-fit:contain;border-radius:50%;padding:2px" />
@@ -30,6 +32,7 @@
       <div class="admin-nav-item" data-tab="projetos">🗂️ Projetos</div>
       <div class="admin-nav-item" data-tab="tarefas">✅ Minhas tarefas</div>
       <div class="admin-nav-item" data-tab="membros">🙋 Membros</div>
+      <div class="admin-nav-item" data-tab="atividades">🕓 Atividades recentes</div>
       <div class="admin-nav-item" data-tab="relatorios">📄 Relatórios</div>
       <div class="admin-nav-item" data-tab="reunioes">🗓️ Reuniões</div>
       <div class="admin-nav-item" data-tab="feedback">💬 Feedback</div>
@@ -44,11 +47,17 @@
 
     <main class="main">
       <div class="topbar">
-        <div>
-          <h1>Espaço de Gestão</h1>
-          <div class="sub" id="sub-espaco">A gerir as suas equipas, projetos e tarefas — apenas o que lhe pertence.</div>
+        <div style="display:flex;align-items:center;gap:12px">
+          <button class="icon-toggle-btn btn-sidebar" title="Mostrar/esconder barra lateral">☰</button>
+          <div>
+            <h1>Espaço de Gestão</h1>
+            <div class="sub" id="sub-espaco">A gerir as suas equipas, projetos e tarefas — apenas o que lhe pertence.</div>
+          </div>
         </div>
-        <div id="ancora-sino"></div>
+        <div class="topbar-actions">
+          <button class="icon-toggle-btn btn-tema" title="Alternar tema claro/escuro">☀️</button>
+          <div id="ancora-sino"></div>
+        </div>
       </div>
 
       <!-- Visão geral -->
@@ -56,6 +65,14 @@
         <div class="stats-grid" id="grid-visao-geral"></div>
         <div class="nav-section-label" style="margin-top:8px">Próximas reuniões</div>
         <div id="visao-geral-reunioes"></div>
+
+        <label class="card-preferencia" for="pref-email-notificacoes">
+          <span>
+            <b>✉️ Notificações por e-mail</b>
+            <small>Receba no seu e-mail (Gmail) o que aparece no sino: tarefas atribuídas, comentários, menções, convites e reuniões.</small>
+          </span>
+          <input type="checkbox" id="pref-email-notificacoes" />
+        </label>
       </section>
 
       <!-- Equipas -->
@@ -68,9 +85,17 @@
       <!-- Projetos -->
       <section id="tab-projetos" class="admin-tab" style="display:none">
         <input type="text" id="pesquisa-projetos" class="busca-lista" placeholder="Pesquisar projetos…" />
+
+        <div class="nav-section-label">Projetos onde sou responsável</div>
+        <table class="admin-table" style="margin-bottom:28px">
+          <thead><tr><th>Projeto</th><th>Descrição</th><th>Tarefas</th><th>Criado em</th><th></th></tr></thead>
+          <tbody id="tbody-projetos-responsavel"></tbody>
+        </table>
+
+        <div class="nav-section-label">Projetos onde fui convidado (membro)</div>
         <table class="admin-table">
           <thead><tr><th>Projeto</th><th>Descrição</th><th>Tarefas</th><th>Criado em</th><th></th></tr></thead>
-          <tbody id="tbody-meus-projetos"></tbody>
+          <tbody id="tbody-projetos-convidado"></tbody>
         </table>
       </section>
 
@@ -87,6 +112,12 @@
       <section id="tab-membros" class="admin-tab" style="display:none">
         <input type="text" id="pesquisa-membros" class="busca-lista" placeholder="Pesquisar membros…" />
         <div id="lista-membros-por-projeto"></div>
+      </section>
+
+      <!-- Atividades recentes -->
+      <section id="tab-atividades" class="admin-tab" style="display:none">
+        <div class="sub" style="margin-bottom:16px">Tudo o que aconteceu recentemente nos projetos de que faz parte.</div>
+        <div id="lista-atividades-workspace"></div>
       </section>
 
       <!-- Relatórios -->
@@ -183,5 +214,6 @@
   <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
   <script src="/js/workspace.js"></script>
+  <script src="/js/ui-shell.js"></script>
 </body>
 </html>

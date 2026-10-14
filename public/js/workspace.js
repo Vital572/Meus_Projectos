@@ -3,10 +3,16 @@ let socket = null;
 
 const rotuloTabs = {
   "visao-geral": "tab-visao-geral", "equipas": "tab-equipas", "projetos": "tab-projetos",
-  "tarefas": "tab-tarefas", "membros": "tab-membros", "relatorios": "tab-relatorios", "reunioes": "tab-reunioes",
-  "feedback": "tab-feedback",
+  "tarefas": "tab-tarefas", "membros": "tab-membros", "atividades": "tab-atividades",
+  "relatorios": "tab-relatorios", "reunioes": "tab-reunioes", "feedback": "tab-feedback",
 };
 const rotuloPrioridade = { alta: "🔴 Alta", media: "🟡 Média", baixa: "🟢 Baixa" };
+const ROTULO_ACAO_ATIVIDADE = {
+  "task.created": "criou a tarefa",
+  "task.updated": "atualizou a tarefa",
+  "task.moved": "moveu uma tarefa",
+  "comment.created": "comentou numa tarefa",
+};
 
 async function iniciar() {
   if (!sessao.obterToken()) { window.location.href = "/entrar.html"; return; }
@@ -39,7 +45,8 @@ async function iniciar() {
 
   ligarNavegacao();
   ligarPesquisaLista("pesquisa-equipas", "lista-equipas");
-  ligarPesquisaLista("pesquisa-projetos", "tbody-meus-projetos");
+  ligarPesquisaLista("pesquisa-projetos", "tbody-projetos-responsavel");
+  ligarPesquisaLista("pesquisa-projetos", "tbody-projetos-convidado");
   ligarPesquisaLista("pesquisa-tarefas", "tbody-minhas-tarefas");
   ligarPesquisaLista("pesquisa-membros", "lista-membros-por-projeto");
   ligarPesquisaLista("pesquisa-reunioes", "lista-reunioes-futuras");
@@ -53,6 +60,7 @@ async function iniciar() {
       carregarMeusProjetos(),
       carregarMinhasTarefas(),
       carregarMembros(),
+      carregarAtividadesWorkspace(),
       carregarRelatorioPessoal(),
       carregarGraficos(),
       carregarReunioes(),
@@ -111,6 +119,19 @@ async function carregarVisaoGeral() {
   document.getElementById("visao-geral-reunioes").innerHTML = futuras.length
     ? futuras.map(cartaoReuniao).join("")
     : `<div class="sub">Sem reuniões marcadas para os próximos dias.</div>`;
+
+  // Preferência: notificações por e-mail
+  const caixaEmail = document.getElementById("pref-email-notificacoes");
+  caixaEmail.checked = eu.email_notificacoes !== false;
+  caixaEmail.onchange = async () => {
+    try {
+      await api.patch("/api/auth/preferencias", { email_notificacoes: caixaEmail.checked });
+      mostrarToast(caixaEmail.checked ? "Notificações por e-mail ativadas." : "Notificações por e-mail desativadas.");
+    } catch (err) {
+      caixaEmail.checked = !caixaEmail.checked;
+      mostrarToast(err.message);
+    }
+  };
 }
 
 // ---------------- Equipas ----------------
@@ -119,7 +140,11 @@ async function carregarEquipas() {
   document.getElementById("lista-equipas").innerHTML = equipas.map((t) => `
     <div class="project-card" style="cursor:default">
       <h3>👥 ${t.name}</h3>
-      <p>${(t.nomes_projetos || []).filter(Boolean).join(", ") || "Sem projetos associados"}</p>
+      <div style="display:flex;flex-wrap:wrap;gap:6px;margin:6px 0">
+        ${(t.projetos || []).filter((p) => p && p.id).map((p) => `
+          <span class="mini-btn" style="cursor:pointer" onclick="location.href='/board.html?projeto=${p.id}'">🗂️ ${p.name}</span>
+        `).join("") || `<span class="sub" style="margin:0">Sem projetos associados</span>`}
+      </div>
       <div class="meta">
         <span>${t.total_membros} membro${t.total_membros === 1 ? "" : "s"}</span>
         <span>${t.total_projetos} projeto${t.total_projetos === 1 ? "" : "s"}</span>
@@ -129,17 +154,41 @@ async function carregarEquipas() {
 }
 
 // ---------------- Projetos ----------------
-async function carregarMeusProjetos() {
-  const projetos = await api.get("/api/projects");
-  document.getElementById("tbody-meus-projetos").innerHTML = projetos.map((p) => `
-    <tr>
+function linhaProjeto(p) {
+  return `
+    <tr style="cursor:pointer" onclick="location.href='/board.html?projeto=${p.id}'">
       <td style="font-weight:600">${p.name}</td>
       <td style="color:var(--ink-dim)">${p.description || "—"}</td>
       <td>${p.total_tarefas}</td>
       <td style="color:var(--ink-faint);font-size:12.5px">${new Date(p.created_at).toLocaleDateString("pt-PT")}</td>
-      <td><span class="mini-btn" onclick="location.href='/board.html?projeto=${p.id}'">Abrir quadro →</span></td>
-    </tr>
-  `).join("") || `<tr><td colspan="5" style="text-align:center;color:var(--ink-faint)">Ainda não tem projetos.</td></tr>`;
+      <td><span class="mini-btn" onclick="event.stopPropagation();location.href='/board.html?projeto=${p.id}'">Abrir quadro →</span></td>
+    </tr>`;
+}
+
+async function carregarMeusProjetos() {
+  const projetos = await api.get("/api/projects");
+  const responsavel = projetos.filter((p) => p.meu_papel === "responsavel");
+  const convidado = projetos.filter((p) => p.meu_papel !== "responsavel");
+
+  document.getElementById("tbody-projetos-responsavel").innerHTML = responsavel.map(linhaProjeto).join("") ||
+    `<tr><td colspan="5" style="text-align:center;color:var(--ink-faint)">Ainda não é responsável por nenhum projeto.</td></tr>`;
+  document.getElementById("tbody-projetos-convidado").innerHTML = convidado.map(linhaProjeto).join("") ||
+    `<tr><td colspan="5" style="text-align:center;color:var(--ink-faint)">Ainda não foi convidado para nenhum projeto.</td></tr>`;
+}
+
+// ---------------- Atividades recentes ----------------
+async function carregarAtividadesWorkspace() {
+  const eventos = await api.get("/api/workspace/atividades");
+  document.getElementById("lista-atividades-workspace").innerHTML = eventos.map((e) => `
+    <div class="report-card" style="margin-bottom:10px;display:flex;align-items:center;gap:12px">
+      <div class="avatar" style="width:30px;height:30px;font-size:12px;background:${e.avatar_color || "#22C7DD"}">${iniciais(e.user_name || "?")}</div>
+      <div style="flex:1">
+        <div style="font-size:13px"><strong>${e.user_name || "Alguém"}</strong> ${ROTULO_ACAO_ATIVIDADE[e.action] || e.action}</div>
+        <div style="font-size:11.5px;color:var(--ink-faint)">${e.projeto_nome} · ${new Date(e.created_at).toLocaleString("pt-PT", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}</div>
+      </div>
+      <span class="mini-btn" onclick="location.href='/board.html?projeto=${e.project_id}'">Ver projeto →</span>
+    </div>
+  `).join("") || `<div class="sub">Sem atividade recente nos seus projetos.</div>`;
 }
 
 // ---------------- Minhas tarefas ----------------

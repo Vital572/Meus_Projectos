@@ -2,7 +2,7 @@ const express = require("express");
 const pool = require("../../db/pool");
 const { autenticar } = require("../middleware/auth");
 const { notificar } = require("../lib/notify");
-const { ehDonoDoProjetoOuAdmin } = require("../lib/permissions");
+const { ehDonoDoProjetoOuAdmin, obterTarefa, podeVerTarefa, podeInteragirComTarefa } = require("../lib/permissions");
 
 const router = express.Router();
 router.use(autenticar);
@@ -10,6 +10,10 @@ router.use(autenticar);
 // GET /api/comments/tarefa/:taskId — lista comentários de uma tarefa
 router.get("/tarefa/:taskId", async (req, res) => {
   try {
+    const tarefa = await obterTarefa(req.params.taskId);
+    if (!tarefa) return res.status(404).json({ erro: "Tarefa não encontrada." });
+    if (!(await podeVerTarefa(req.user, tarefa))) return res.status(403).json({ erro: "Sem acesso a esta tarefa." });
+
     const { rows } = await pool.query(
       `SELECT c.id, c.content, c.created_at, u.id AS user_id, u.name AS user_name, u.avatar_color
        FROM gpitrack.comments c
@@ -31,12 +35,15 @@ router.post("/", async (req, res) => {
   if (!task_id || !content) return res.status(400).json({ erro: "task_id e content são obrigatórios." });
 
   try {
-    const { rows: taskRows } = await pool.query(
-      `SELECT project_id, assignee_id, title FROM gpitrack.tasks WHERE id = $1`,
-      [task_id]
-    );
-    if (taskRows.length === 0) return res.status(404).json({ erro: "Tarefa não encontrada." });
-    const { project_id: projectId, assignee_id: assigneeId, title } = taskRows[0];
+    const tarefa = await obterTarefa(task_id);
+    if (!tarefa) return res.status(404).json({ erro: "Tarefa não encontrada." });
+    if (!(await podeVerTarefa(req.user, tarefa))) return res.status(403).json({ erro: "Sem acesso a esta tarefa." });
+    // Ver a tarefa não chega: numa tarefa visível a toda a equipa, só quem
+    // está diretamente envolvido nela pode comentar — os restantes só veem.
+    if (!(await podeInteragirComTarefa(req.user, tarefa))) {
+      return res.status(403).json({ erro: "Só quem é responsável por esta tarefa pode comentar. Pode ver as informações, mas não interagir." });
+    }
+    const { project_id: projectId, assignee_id: assigneeId, title } = tarefa;
 
     const { rows } = await pool.query(
       `INSERT INTO gpitrack.comments (task_id, user_id, content) VALUES ($1, $2, $3)

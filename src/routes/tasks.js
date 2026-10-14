@@ -5,7 +5,7 @@ const crypto = require("crypto");
 const multer = require("multer");
 const pool = require("../../db/pool");
 const { autenticar } = require("../middleware/auth");
-const { obterTarefa, podeGerirTarefa, obterProjeto, ehMembroDoProjeto, ehDonoDoProjetoOuAdmin } = require("../lib/permissions");
+const { obterTarefa, podeGerirTarefa, obterProjeto, ehMembroDoProjeto, ehDonoDoProjetoOuAdmin, podeVerTarefa, podeInteragirComTarefa } = require("../lib/permissions");
 const { notificar } = require("../lib/notify");
 
 const router = express.Router();
@@ -38,11 +38,36 @@ async function registarAtividade(client, projectId, userId, action, details) {
 }
 
 // POST /api/tasks — cria uma tarefa e notifica a equipa em tempo real
+// Devolve os ids dos utilizadores autorizados a ver uma tarefa restrita:
+// responsáveis do projeto + o atribuído à tarefa (os administradores recebem
+// o evento à parte, pela sala "admins").
+async function obterDestinatariosTarefaRestrita(projectId, assigneeId) {
+  const { rows } = await pool.query(
+    `SELECT user_id FROM gpitrack.project_members WHERE project_id = $1 AND role = 'responsavel' AND status = 'ativo'`,
+    [projectId]
+  );
+  const ids = new Set(rows.map((r) => r.user_id));
+  if (assigneeId) ids.add(assigneeId);
+  return [...ids];
+}
+
+function emitirParaTarefa(io, task, evento, payload) {
+  if (task.visibility === "restrita") {
+    io.to("admins").emit(evento, payload);
+    obterDestinatariosTarefaRestrita(task.project_id, task.assignee_id).then((ids) => {
+      ids.forEach((userId) => io.to(`user:${userId}`).emit(evento, payload));
+    });
+  } else {
+    io.to(`project:${task.project_id}`).emit(evento, payload);
+  }
+}
+
 router.post("/", async (req, res) => {
-  const { project_id, column_id, title, description, priority, assignee_id, due_date } = req.body;
+  const { project_id, column_id, title, description, priority, assignee_id, due_date, visibility } = req.body;
   if (!project_id || !column_id || !title) {
     return res.status(400).json({ erro: "project_id, column_id e title são obrigatórios." });
   }
+  const visibilidade = visibility === "restrita" ? "restrita" : "equipa";
 
   const client = await pool.connect();
   try {
@@ -53,17 +78,17 @@ router.post("/", async (req, res) => {
     );
     const { rows } = await client.query(
       `INSERT INTO gpitrack.tasks
-         (project_id, column_id, title, description, priority, assignee_id, due_date, position, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-       RETURNING id, project_id, column_id, title, description, priority, assignee_id, due_date, position, created_at, updated_at`,
-      [project_id, column_id, title, description || null, priority || "media", assignee_id || null, due_date || null, posRows[0].pos, req.user.id]
+         (project_id, column_id, title, description, priority, assignee_id, due_date, position, created_by, visibility)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       RETURNING id, project_id, column_id, title, description, priority, assignee_id, due_date, position, created_at, updated_at, visibility`,
+      [project_id, column_id, title, description || null, priority || "media", assignee_id || null, due_date || null, posRows[0].pos, req.user.id, visibilidade]
     );
     const task = rows[0];
     await registarAtividade(client, project_id, req.user.id, "task.created", { taskId: task.id, title });
     await client.query("COMMIT");
 
     const io = req.app.get("io");
-    io.to(`project:${project_id}`).emit("task:created", { task, autor: req.user.name });
+    emitirParaTarefa(io, task, "task:created", { task, autor: req.user.name, autorId: req.user.id });
 
     if (assignee_id && assignee_id !== req.user.id) {
       await notificar(io, {
@@ -95,11 +120,12 @@ router.patch("/:id", async (req, res) => {
     return res.status(403).json({ erro: "Apenas quem criou a tarefa, o dono do projeto ou um administrador pode editá-la." });
   }
 
-  const campos = ["title", "description", "priority", "assignee_id", "due_date"];
+  const campos = ["title", "description", "priority", "assignee_id", "due_date", "visibility"];
   const updates = [];
   const valores = [];
   campos.forEach((campo) => {
     if (req.body[campo] !== undefined) {
+      if (campo === "visibility" && !["equipa", "restrita"].includes(req.body.visibility)) return;
       updates.push(`${campo} = $${updates.length + 1}`);
       valores.push(req.body[campo]);
     }
@@ -110,7 +136,7 @@ router.patch("/:id", async (req, res) => {
     valores.push(id);
     const { rows } = await pool.query(
       `UPDATE gpitrack.tasks SET ${updates.join(", ")} WHERE id = $${valores.length}
-       RETURNING id, project_id, column_id, title, description, priority, assignee_id, due_date, position, updated_at`,
+       RETURNING id, project_id, column_id, title, description, priority, assignee_id, due_date, position, updated_at, visibility`,
       valores
     );
     const task = rows[0];
@@ -123,7 +149,7 @@ router.patch("/:id", async (req, res) => {
     );
 
     const io = req.app.get("io");
-    io.to(`project:${task.project_id}`).emit("task:updated", { task, autor: req.user.name });
+    emitirParaTarefa(io, task, "task:updated", { task, autor: req.user.name, autorId: req.user.id });
 
     if (req.body.assignee_id && req.body.assignee_id !== req.user.id) {
       const { notificar } = require("../lib/notify");
@@ -164,7 +190,7 @@ router.patch("/:id/mover", async (req, res) => {
 
     const { rows } = await pool.query(
       `UPDATE gpitrack.tasks SET column_id = $1, position = $2 WHERE id = $3
-       RETURNING id, project_id, column_id, position, title`,
+       RETURNING id, project_id, column_id, position, title, visibility, assignee_id`,
       [column_id, position, id]
     );
     const task = rows[0];
@@ -177,7 +203,7 @@ router.patch("/:id/mover", async (req, res) => {
     );
 
     const io = req.app.get("io");
-    io.to(`project:${task.project_id}`).emit("task:moved", { task, autor: req.user.name });
+    emitirParaTarefa(io, task, "task:moved", { task, autor: req.user.name, autorId: req.user.id });
 
     // Automações simples: "quando uma tarefa entra nesta coluna, notifica X"
     await executarAutomacoes(io, task, req.user);
@@ -299,6 +325,10 @@ router.put("/:id/etiquetas", async (req, res) => {
 // GET /api/tasks/:id/checklist
 router.get("/:id/checklist", async (req, res) => {
   try {
+    const tarefa = await obterTarefa(req.params.id);
+    if (!tarefa) return res.status(404).json({ erro: "Tarefa não encontrada." });
+    if (!(await podeVerTarefa(req.user, tarefa))) return res.status(403).json({ erro: "Sem acesso a esta tarefa." });
+
     const { rows } = await pool.query(
       `SELECT id, content, is_done, position FROM gpitrack.checklist_items
        WHERE task_id = $1 ORDER BY position ASC`,
@@ -333,7 +363,7 @@ router.post("/:id/checklist", async (req, res) => {
     );
 
     const io = req.app.get("io");
-    io.to(`project:${tarefa.project_id}`).emit("checklist:item-created", { taskId: req.params.id, item: rows[0] });
+    io.to(`project:${tarefa.project_id}`).emit("checklist:item-created", { taskId: req.params.id, item: rows[0], autorId: req.user.id });
 
     res.status(201).json(rows[0]);
   } catch (err) {
@@ -342,21 +372,28 @@ router.post("/:id/checklist", async (req, res) => {
   }
 });
 
-// PATCH /api/tasks/checklist/:itemId — marca/desmarca um item
+// PATCH /api/tasks/checklist/:itemId — marca/desmarca um item (só responsáveis
+// do projeto ou administradores — um membro comum não pode marcar checklist)
 router.patch("/checklist/:itemId", async (req, res) => {
   const { is_done } = req.body;
   try {
+    const { rows: itemAtual } = await pool.query(`SELECT task_id FROM gpitrack.checklist_items WHERE id = $1`, [req.params.itemId]);
+    if (itemAtual.length === 0) return res.status(404).json({ erro: "Item não encontrado." });
+
+    const tarefa = await obterTarefa(itemAtual[0].task_id);
+    if (!tarefa) return res.status(404).json({ erro: "Tarefa não encontrada." });
+    const podeMarcar = await ehDonoDoProjetoOuAdmin(req.user, tarefa.project_id);
+    if (!podeMarcar) return res.status(403).json({ erro: "Só responsáveis do projeto ou administradores podem marcar itens da checklist." });
+
     const { rows } = await pool.query(
       `UPDATE gpitrack.checklist_items SET is_done = $1 WHERE id = $2
        RETURNING id, task_id, content, is_done, position`,
       [is_done, req.params.itemId]
     );
     const item = rows[0];
-    if (!item) return res.status(404).json({ erro: "Item não encontrado." });
 
-    const { rows: taskRows } = await pool.query(`SELECT project_id FROM gpitrack.tasks WHERE id = $1`, [item.task_id]);
     const io = req.app.get("io");
-    io.to(`project:${taskRows[0].project_id}`).emit("checklist:item-updated", { taskId: item.task_id, item });
+    io.to(`project:${tarefa.project_id}`).emit("checklist:item-updated", { taskId: item.task_id, item });
 
     res.json(item);
   } catch (err) {
@@ -365,19 +402,25 @@ router.patch("/checklist/:itemId", async (req, res) => {
   }
 });
 
-// DELETE /api/tasks/checklist/:itemId
+// DELETE /api/tasks/checklist/:itemId — só responsáveis do projeto ou administradores
 router.delete("/checklist/:itemId", async (req, res) => {
   try {
+    const { rows: itemAtual } = await pool.query(`SELECT task_id FROM gpitrack.checklist_items WHERE id = $1`, [req.params.itemId]);
+    if (itemAtual.length === 0) return res.status(404).json({ erro: "Item não encontrado." });
+
+    const tarefa = await obterTarefa(itemAtual[0].task_id);
+    if (!tarefa) return res.status(404).json({ erro: "Tarefa não encontrada." });
+    const podeRemover = await ehDonoDoProjetoOuAdmin(req.user, tarefa.project_id);
+    if (!podeRemover) return res.status(403).json({ erro: "Só responsáveis do projeto ou administradores podem remover itens da checklist." });
+
     const { rows } = await pool.query(
       `DELETE FROM gpitrack.checklist_items WHERE id = $1 RETURNING id, task_id`,
       [req.params.itemId]
     );
     const item = rows[0];
-    if (!item) return res.status(404).json({ erro: "Item não encontrado." });
 
-    const { rows: taskRows } = await pool.query(`SELECT project_id FROM gpitrack.tasks WHERE id = $1`, [item.task_id]);
     const io = req.app.get("io");
-    io.to(`project:${taskRows[0].project_id}`).emit("checklist:item-deleted", { taskId: item.task_id, itemId: item.id });
+    io.to(`project:${tarefa.project_id}`).emit("checklist:item-deleted", { taskId: item.task_id, itemId: item.id });
 
     res.json({ ok: true });
   } catch (err) {
@@ -389,6 +432,10 @@ router.delete("/checklist/:itemId", async (req, res) => {
 // GET /api/tasks/:id/anexos — lista os ficheiros já enviados nesta tarefa
 router.get("/:id/anexos", async (req, res) => {
   try {
+    const tarefa = await obterTarefa(req.params.id);
+    if (!tarefa) return res.status(404).json({ erro: "Tarefa não encontrada." });
+    if (!(await podeVerTarefa(req.user, tarefa))) return res.status(403).json({ erro: "Sem acesso a esta tarefa." });
+
     const { rows } = await pool.query(
       `SELECT a.id, a.file_name, a.file_size, a.mime_type, a.created_at,
               u.name AS enviado_por_nome,
@@ -417,10 +464,16 @@ router.post("/:id/anexos", upload.single("ficheiro"), async (req, res) => {
       return res.status(404).json({ erro: "Tarefa não encontrada." });
     }
 
-    const podeEnviar = await ehMembroDoProjeto(req.user, tarefa.project_id);
-    if (!podeEnviar) {
+    if (!(await podeVerTarefa(req.user, tarefa))) {
       if (req.file) fs.unlink(req.file.path, () => {});
-      return res.status(403).json({ erro: "Sem permissão para enviar ficheiros nesta tarefa." });
+      return res.status(403).json({ erro: "Sem acesso a esta tarefa." });
+    }
+    // Ver a tarefa não chega: só quem está diretamente envolvido nela (o
+    // atribuído, um responsável extra, um responsável do projeto, ou um
+    // administrador) pode enviar ficheiros — os restantes só veem.
+    if (!(await podeInteragirComTarefa(req.user, tarefa))) {
+      if (req.file) fs.unlink(req.file.path, () => {});
+      return res.status(403).json({ erro: "Só quem é responsável por esta tarefa pode enviar ficheiros. Pode ver as informações, mas não interagir." });
     }
 
     if (!req.file) {
@@ -499,6 +552,10 @@ router.get("/anexos/:anexoId/download", async (req, res) => {
 // GET /api/tasks/:id/responsaveis — responsáveis extra da tarefa (além do principal)
 router.get("/:id/responsaveis", async (req, res) => {
   try {
+    const tarefa = await obterTarefa(req.params.id);
+    if (!tarefa) return res.status(404).json({ erro: "Tarefa não encontrada." });
+    if (!(await podeVerTarefa(req.user, tarefa))) return res.status(403).json({ erro: "Sem acesso a esta tarefa." });
+
     const { rows } = await pool.query(
       `SELECT u.id, u.name, u.email, u.avatar_color
        FROM gpitrack.task_responsibles tr

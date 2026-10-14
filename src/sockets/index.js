@@ -118,6 +118,11 @@ function configurarSockets(io) {
       socket.to(`project:${projectId}`).emit("comment:digitando", { taskId, user: socket.user.name });
     });
 
+    // Indicador "a escrever..." na conversa da equipa (canal do projeto)
+    socket.on("channel:digitando", ({ projectId }) => {
+      socket.to(`project:${projectId}`).emit("channel:digitando", { user: socket.user.name });
+    });
+
     socket.on("disconnect", () => {
       const projectId = socket.data.projectId;
       if (projectId && presencaProjeto.has(projectId)) {

@@ -194,17 +194,14 @@ router.get("/:id/quadro", async (req, res) => {
       `SELECT id, name, position, is_done, restricted FROM gpitrack.board_columns WHERE project_id = $1 ORDER BY position`,
       [id]
     );
-    // Colunas restritas (ex.: "Em Revisão") só ficam visíveis para responsáveis/admin
-    const colunasVisiveis = souResponsavel ? colunas.rows : colunas.rows.filter((c) => !c.restricted);
-    const idsColunasVisiveis = new Set(colunasVisiveis.map((c) => c.id));
-
     const tarefas = await pool.query(
       `SELECT t.id, t.column_id, t.title, t.description, t.priority, t.due_date, t.position,
-              t.created_by, t.created_at, t.updated_at,
+              t.created_by, t.created_at, t.updated_at, t.visibility,
               u.id AS assignee_id, u.name AS assignee_name, u.avatar_color AS assignee_color,
               COALESCE(lbl.etiquetas, '[]'::json) AS labels,
               COALESCE(chk.total, 0) AS checklist_total,
-              COALESCE(chk.feitos, 0) AS checklist_feitos
+              COALESCE(chk.feitos, 0) AS checklist_feitos,
+              EXISTS (SELECT 1 FROM gpitrack.task_responsibles tr WHERE tr.task_id = t.id AND tr.user_id = $2) AS sou_responsavel_tarefa
        FROM gpitrack.tasks t
        LEFT JOIN gpitrack.users u ON u.id = t.assignee_id
        LEFT JOIN LATERAL (
@@ -220,9 +217,29 @@ router.get("/:id/quadro", async (req, res) => {
        ) chk ON true
        WHERE t.project_id = $1
        ORDER BY t.position ASC`,
-      [id]
+      [id, req.user.id]
     );
-    const tarefasVisiveis = tarefas.rows.filter((t) => idsColunasVisiveis.has(t.column_id));
+    // Colunas restritas (ex.: "Em Revisão", ou "Concluído" marcada como restrita)
+    // só ficam visíveis, com todas as suas tarefas, para responsáveis/admin. Mas
+    // uma pessoa que já estava a trabalhar numa tarefa sua — por ser o atribuído
+    // ou um responsável extra dela — não perde o acesso a essa tarefa só porque
+    // ela foi movida para lá: continua a vê-la e a conseguir comentar/anexar
+    // ficheiros, só não vê as restantes tarefas dessa coluna.
+    const colunasPorId = new Map(colunas.rows.map((c) => [c.id, c]));
+    const ehTarefaMinha = (t) => t.assignee_id === req.user.id || t.sou_responsavel_tarefa;
+
+    const tarefasVisiveis = tarefas.rows.filter((t) => {
+      const coluna = colunasPorId.get(t.column_id);
+      if (!coluna) return false;
+      if (coluna.restricted && !souResponsavel && !ehTarefaMinha(t)) return false;
+      if (t.visibility === "restrita" && !souResponsavel && !ehTarefaMinha(t)) return false;
+      return true;
+    });
+
+    const idsColunasComTarefaVisivel = new Set(tarefasVisiveis.map((t) => t.column_id));
+    const colunasVisiveis = souResponsavel
+      ? colunas.rows
+      : colunas.rows.filter((c) => !c.restricted || idsColunasComTarefaVisivel.has(c.id));
 
     const membros = await pool.query(
       `SELECT u.id, u.name, u.email, u.avatar_color, pm.role
@@ -403,10 +420,14 @@ router.get("/:id/etiquetas", async (req, res) => {
 });
 
 // POST /api/projects/:id/etiquetas — cria uma nova etiqueta no projeto
+// (só responsáveis do projeto ou administradores — não é permitido a membros comuns)
 router.post("/:id/etiquetas", async (req, res) => {
   const { name, color } = req.body;
   if (!name) return res.status(400).json({ erro: "O nome da etiqueta é obrigatório." });
   try {
+    const autorizado = await ehDonoDoProjetoOuAdmin(req.user, req.params.id);
+    if (!autorizado) return res.status(403).json({ erro: "Só responsáveis do projeto ou administradores podem criar etiquetas." });
+
     const { rows } = await pool.query(
       `INSERT INTO gpitrack.labels (project_id, name, color) VALUES ($1, $2, $3)
        RETURNING id, name, color`,
@@ -847,21 +868,39 @@ router.get("/:id/mensagens", async (req, res) => {
     if (!podeVer) return res.status(403).json({ erro: "Sem permissão para ver esta conversa." });
 
     const { rows } = await pool.query(
-      `SELECT cm.id, cm.content, cm.type, cm.file_name, cm.file_size, cm.mime_type, cm.duration_seconds, cm.created_at,
+      `SELECT cm.id, cm.content, cm.type, cm.file_name, cm.file_size, cm.mime_type, cm.duration_seconds,
+              cm.created_at, cm.edited_at, cm.deleted_at,
               u.id AS user_id, u.name AS autor_nome, u.avatar_color
        FROM gpitrack.channel_messages cm
        JOIN gpitrack.users u ON u.id = cm.user_id
        WHERE cm.project_id = $1
+         AND NOT EXISTS (
+           SELECT 1 FROM gpitrack.channel_message_hidden h WHERE h.message_id = cm.id AND h.user_id = $2
+         )
        ORDER BY cm.created_at ASC
        LIMIT 200`,
-      [req.params.id]
+      [req.params.id, req.user.id]
     );
-    res.json(rows.map((m) => ({ ...m, url: m.file_name ? `/api/projects/mensagens/${m.id}/ficheiro` : null })));
+    res.json(rows.map(formatarMensagemCanal));
   } catch (err) {
     console.error(err);
     res.status(500).json({ erro: "Erro ao obter a conversa." });
   }
 });
+
+// Uma mensagem eliminada "para todos" perde o conteúdo e o ficheiro — fica só
+// a marca de que foi eliminada. Usado tanto na listagem como nos eventos de
+// socket, para nunca devolver o conteúdo antigo por engano.
+function formatarMensagemCanal(m) {
+  if (m.deleted_at) {
+    return {
+      id: m.id, user_id: m.user_id, autor_nome: m.autor_nome, avatar_color: m.avatar_color,
+      created_at: m.created_at, type: "texto", content: null, deleted_at: m.deleted_at,
+      edited_at: null, file_name: null, url: null,
+    };
+  }
+  return { ...m, url: m.file_name ? `/api/projects/mensagens/${m.id}/ficheiro` : null };
+}
 
 // POST /api/projects/:id/mensagens — mensagem de texto
 router.post("/:id/mensagens", async (req, res) => {
@@ -928,15 +967,94 @@ router.post("/:id/mensagens/multimedia", uploadCanal.single("ficheiro"), async (
   }
 });
 
+// PATCH /api/projects/mensagens/:messageId — editar uma mensagem de texto
+// própria (só o autor; só mensagens de texto, ainda não eliminadas).
+router.patch("/mensagens/:messageId", async (req, res) => {
+  const { content } = req.body;
+  if (!content || !content.trim()) return res.status(400).json({ erro: "A mensagem não pode ficar vazia." });
+
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, project_id, user_id, type, deleted_at FROM gpitrack.channel_messages WHERE id = $1`,
+      [req.params.messageId]
+    );
+    const msg = rows[0];
+    if (!msg) return res.status(404).json({ erro: "Mensagem não encontrada." });
+    if (msg.deleted_at) return res.status(400).json({ erro: "Esta mensagem foi eliminada." });
+    if (msg.user_id !== req.user.id) return res.status(403).json({ erro: "Só pode editar as suas próprias mensagens." });
+    if (msg.type !== "texto") return res.status(400).json({ erro: "Só mensagens de texto podem ser editadas." });
+
+    const { rows: atualizado } = await pool.query(
+      `UPDATE gpitrack.channel_messages SET content = $1, edited_at = now() WHERE id = $2
+       RETURNING id, content, edited_at`,
+      [content.trim(), msg.id]
+    );
+
+    const io = req.app.get("io");
+    io.to(`project:${msg.project_id}`).emit("channel:message-edited", atualizado[0]);
+    res.json(atualizado[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: "Erro ao editar a mensagem." });
+  }
+});
+
+// DELETE /api/projects/mensagens/:messageId?escopo=todos|mim
+//  - "todos": o autor (ou um responsável do projeto/admin) elimina a mensagem
+//    para toda a gente — passa a mostrar "Mensagem eliminada" a todos.
+//  - "mim" (por omissão): só deixa de aparecer para quem pediu; os outros
+//    continuam a ver a mensagem normalmente.
+router.delete("/mensagens/:messageId", async (req, res) => {
+  const escopo = req.query.escopo === "todos" ? "todos" : "mim";
+
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, project_id, user_id, deleted_at FROM gpitrack.channel_messages WHERE id = $1`,
+      [req.params.messageId]
+    );
+    const msg = rows[0];
+    if (!msg) return res.status(404).json({ erro: "Mensagem não encontrada." });
+
+    if (escopo === "todos") {
+      if (msg.deleted_at) return res.json({ ok: true });
+      const souAutor = msg.user_id === req.user.id;
+      const souGestor = await ehDonoDoProjetoOuAdmin(req.user, msg.project_id);
+      if (!souAutor && !souGestor) {
+        return res.status(403).json({ erro: "Só o autor ou um responsável do projeto pode eliminar esta mensagem para todos." });
+      }
+      await pool.query(
+        `UPDATE gpitrack.channel_messages SET deleted_at = now(), deleted_by = $1 WHERE id = $2`,
+        [req.user.id, msg.id]
+      );
+      const io = req.app.get("io");
+      io.to(`project:${msg.project_id}`).emit("channel:message-deleted", { id: msg.id, escopo: "todos" });
+      return res.json({ ok: true });
+    }
+
+    // "mim": qualquer membro pode ocultar qualquer mensagem só para si.
+    const podeVer = await ehMembroDoProjeto(req.user, msg.project_id);
+    if (!podeVer) return res.status(403).json({ erro: "Sem permissão nesta conversa." });
+    await pool.query(
+      `INSERT INTO gpitrack.channel_message_hidden (message_id, user_id) VALUES ($1, $2)
+       ON CONFLICT (message_id, user_id) DO NOTHING`,
+      [msg.id, req.user.id]
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: "Erro ao eliminar a mensagem." });
+  }
+});
+
 // GET /api/projects/mensagens/:messageId/ficheiro — descarrega/reproduz o media de uma mensagem
 router.get("/mensagens/:messageId/ficheiro", async (req, res) => {
   try {
     const { rows } = await pool.query(
-      `SELECT project_id, file_name, stored_name, mime_type FROM gpitrack.channel_messages WHERE id = $1`,
+      `SELECT project_id, file_name, stored_name, mime_type, deleted_at FROM gpitrack.channel_messages WHERE id = $1`,
       [req.params.messageId]
     );
     const msg = rows[0];
-    if (!msg || !msg.stored_name) return res.status(404).json({ erro: "Ficheiro não encontrado." });
+    if (!msg || !msg.stored_name || msg.deleted_at) return res.status(404).json({ erro: "Ficheiro não encontrado." });
 
     const podeVer = await ehMembroDoProjeto(req.user, msg.project_id);
     if (!podeVer) return res.status(403).json({ erro: "Sem permissão para aceder a este ficheiro." });

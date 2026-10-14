@@ -38,14 +38,16 @@ async function projetosDoUtilizador(userId) {
 }
 
 // GET /api/workspace/equipas — equipas ligadas aos projetos do utilizador
-// (não todas as equipas da plataforma — só as que estão nos seus projetos)
+// (não todas as equipas da plataforma — só as que estão nos seus projetos),
+// com os projetos de cada equipa identificados (id + nome) para poderem ser
+// abertos diretamente a partir daqui.
 router.get("/equipas", async (req, res) => {
   try {
     const { rows } = await pool.query(
       `SELECT t.id, t.name, t.created_at,
               COUNT(DISTINCT p.id)::int AS total_projetos,
               COUNT(DISTINCT pm.user_id)::int AS total_membros,
-              ARRAY_AGG(DISTINCT p.name) AS nomes_projetos
+              jsonb_agg(DISTINCT jsonb_build_object('id', p.id, 'name', p.name)) AS projetos
        FROM gpitrack.teams t
        JOIN gpitrack.projects p ON p.team_id = t.id
        JOIN gpitrack.project_members pm ON pm.project_id = p.id AND pm.status = 'ativo'
@@ -60,6 +62,33 @@ router.get("/equipas", async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ erro: "Erro ao obter equipas." });
+  }
+});
+
+// GET /api/workspace/atividades — atividade recente em todos os projetos do
+// utilizador (criação/edição/movimentação de tarefas, comentários), para a
+// aba "Atividades recentes" do Espaço de Gestão.
+router.get("/atividades", async (req, res) => {
+  try {
+    const idsProjetos = await projetosDoUtilizador(req.user.id);
+    if (idsProjetos.length === 0) return res.json([]);
+
+    const { rows } = await pool.query(
+      `SELECT a.id, a.action, a.details, a.created_at, a.user_id,
+              u.name AS user_name, u.avatar_color,
+              p.id AS project_id, p.name AS projeto_nome
+       FROM gpitrack.activity_log a
+       LEFT JOIN gpitrack.users u ON u.id = a.user_id
+       JOIN gpitrack.projects p ON p.id = a.project_id
+       WHERE a.project_id = ANY($1)
+       ORDER BY a.created_at DESC
+       LIMIT 50`,
+      [idsProjetos]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: "Erro ao obter atividades recentes." });
   }
 });
 

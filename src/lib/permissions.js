@@ -27,13 +27,50 @@ async function ehDonoDoProjetoOuAdmin(user, projectId) {
   return rows.length > 0;
 }
 
-/** Devolve a tarefa (id, project_id, created_by) ou null se não existir. */
+/** Devolve a tarefa (id, project_id, created_by, visibility, assignee_id) ou null se não existir. */
 async function obterTarefa(taskId) {
   const { rows } = await pool.query(
-    `SELECT id, project_id, created_by, title FROM gpitrack.tasks WHERE id = $1`,
+    `SELECT id, project_id, created_by, title, visibility, assignee_id FROM gpitrack.tasks WHERE id = $1`,
     [taskId]
   );
   return rows[0] || null;
+}
+
+/**
+ * true se o utilizador pode VER a tarefa. Tarefas com visibilidade "equipa"
+ * são visíveis a qualquer membro do projeto; tarefas "restrita" só são
+ * visíveis para responsáveis do projeto, administradores, o atribuído, e os
+ * responsáveis extra dessa tarefa.
+ */
+async function podeVerTarefa(user, tarefa) {
+  if (user.role === "admin") return true;
+  if (tarefa.visibility !== "restrita") return true;
+  if (tarefa.assignee_id === user.id) return true;
+  if (await ehDonoDoProjetoOuAdmin(user, tarefa.project_id)) return true;
+  const { rows } = await pool.query(
+    `SELECT 1 FROM gpitrack.task_responsibles WHERE task_id = $1 AND user_id = $2`,
+    [tarefa.id, user.id]
+  );
+  return rows.length > 0;
+}
+
+/**
+ * true se o utilizador pode COMENTAR ou ENVIAR FICHEIROS nesta tarefa —
+ * diferente de podeVerTarefa: mesmo numa tarefa visível a toda a equipa
+ * ("equipa"), só o atribuído, os responsáveis extra dessa tarefa, os
+ * responsáveis do projeto e os administradores podem interagir; os
+ * restantes membros só podem ver as informações (título, descrição,
+ * checklist, etiquetas), em modo só-leitura.
+ */
+async function podeInteragirComTarefa(user, tarefa) {
+  if (user.role === "admin") return true;
+  if (tarefa.assignee_id === user.id) return true;
+  if (await ehDonoDoProjetoOuAdmin(user, tarefa.project_id)) return true;
+  const { rows } = await pool.query(
+    `SELECT 1 FROM gpitrack.task_responsibles WHERE task_id = $1 AND user_id = $2`,
+    [tarefa.id, user.id]
+  );
+  return rows.length > 0;
 }
 
 /**
@@ -59,4 +96,4 @@ async function ehMembroDoProjeto(user, projectId) {
   return rows.length > 0;
 }
 
-module.exports = { obterProjeto, ehDonoDoProjetoOuAdmin, obterTarefa, podeGerirTarefa, ehMembroDoProjeto };
+module.exports = { obterProjeto, ehDonoDoProjetoOuAdmin, obterTarefa, podeGerirTarefa, ehMembroDoProjeto, podeVerTarefa, podeInteragirComTarefa };

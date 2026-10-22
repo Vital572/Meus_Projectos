@@ -2,10 +2,13 @@ const express = require("express");
 const bcrypt = require("bcryptjs");
 const crypto = require("crypto");
 const pool = require("../../db/pool");
-const { assinarToken, autenticar } = require("../middleware/auth");
+const { assinarToken, assinarTokenMFA, autenticar, JWT_SECRET } = require("../middleware/auth");
 const { estaUtilizadorLigado } = require("../sockets");
 const { avaliarSenha } = require("../../public/js/password-strength");
 const { enviarEmailRecuperacao, urlBase } = require("../lib/email");
+const jwt = require("jsonwebtoken");
+const { authenticator } = require("otplib");
+const qrcode = require("qrcode");
 
 // Login com Google: só fica ativo se GOOGLE_CLIENT_ID estiver no .env.
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || null;
@@ -93,7 +96,7 @@ router.post("/login", async (req, res) => {
   const { email, password } = req.body;
   try {
     const { rows } = await pool.query(
-      `SELECT id, name, email, password_hash, avatar_color, role, is_active
+      `SELECT id, name, email, password_hash, avatar_color, role, is_active, mfa_enabled
        FROM gpitrack.users WHERE email = $1`,
       [email]
     );
@@ -112,6 +115,14 @@ router.post("/login", async (req, res) => {
     const ok = await bcrypt.compare(password || "", user.password_hash);
     if (!ok) return res.status(401).json({ erro: "Credenciais inválidas." });
 
+    // Password certa, mas se a conta tem autenticação de dois fatores ativa
+    // ainda não entra — fica à espera do código da app autenticadora. O
+    // "mfa_token" é só um bilhete de 5 minutos para o próximo pedido, nunca
+    // uma sessão válida (ver assinarTokenMFA/autenticar).
+    if (user.mfa_enabled) {
+      return res.json({ mfa_required: true, mfa_token: assinarTokenMFA(user.id) });
+    }
+
     // Impede que a mesma conta tenha duas sessões em simultâneo (outro
     // separador, outro navegador, ou outro dispositivo). A verificação
     // usa a ligação em tempo real (Socket.IO) como fonte da verdade: se
@@ -125,6 +136,7 @@ router.post("/login", async (req, res) => {
 
     delete user.password_hash;
     delete user.is_active;
+    delete user.mfa_enabled;
     const token = assinarToken(user);
     res.json({ user, token });
   } catch (err) {
@@ -139,11 +151,125 @@ router.post("/logout", (req, res) => {
   res.json({ ok: true });
 });
 
+// ---------------- Autenticação de dois fatores (2FA / MFA, TOTP) ----------------
+
+// POST /api/auth/mfa/verificar-login — segundo passo do login quando a conta
+// tem 2FA ativo: troca o "mfa_token" de 5 minutos + o código de 6 dígitos da
+// app autenticadora pela sessão normal (igual ao que /login devolvia antes).
+router.post("/mfa/verificar-login", async (req, res) => {
+  const { mfa_token, code } = req.body;
+  if (!mfa_token || !code) return res.status(400).json({ erro: "Código em falta." });
+
+  let payload;
+  try {
+    payload = jwt.verify(mfa_token, JWT_SECRET);
+  } catch {
+    return res.status(401).json({ erro: "Este pedido expirou. Volte a entrar com a password." });
+  }
+  if (!payload.mfaPending) return res.status(401).json({ erro: "Pedido inválido." });
+
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, name, email, avatar_color, role, is_active, mfa_secret FROM gpitrack.users WHERE id = $1`,
+      [payload.id]
+    );
+    const user = rows[0];
+    if (!user || !user.is_active || !user.mfa_secret) {
+      return res.status(401).json({ erro: "Não foi possível validar o código." });
+    }
+    if (!authenticator.check(String(code).trim(), user.mfa_secret)) {
+      return res.status(401).json({ erro: "Código incorreto. Verifique a app autenticadora e tente de novo." });
+    }
+    if (estaUtilizadorLigado(user.id)) {
+      return res.status(409).json({ erro: MSG_SESSAO_ATIVA });
+    }
+    await pool.query(`UPDATE gpitrack.users SET last_seen_at = now() WHERE id = $1`, [user.id]);
+    delete user.is_active;
+    delete user.mfa_secret;
+    res.json({ user, token: assinarToken(user) });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: "Erro ao validar o código." });
+  }
+});
+
+// GET /api/auth/mfa/configurar — gera (ou reaproveita) um segredo TOTP ainda
+// por confirmar e devolve o QR code para o ler numa app autenticadora.
+// Só fica "ativo" de facto depois de /mfa/ativar confirmar um código certo.
+router.get("/mfa/configurar", autenticar, async (req, res) => {
+  try {
+    const { rows } = await pool.query(`SELECT email, mfa_enabled FROM gpitrack.users WHERE id = $1`, [req.user.id]);
+    const user = rows[0];
+    if (!user) return res.status(404).json({ erro: "Utilizador não encontrado." });
+    if (user.mfa_enabled) return res.status(400).json({ erro: "A autenticação de dois fatores já está ativa." });
+
+    const secret = authenticator.generateSecret();
+    await pool.query(`UPDATE gpitrack.users SET mfa_secret = $1 WHERE id = $2`, [secret, req.user.id]);
+
+    const otpauth = authenticator.keyuri(user.email, "GPI Track", secret);
+    const qrCodeDataUrl = await qrcode.toDataURL(otpauth);
+    res.json({ secret, qrCodeDataUrl });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: "Erro ao preparar a autenticação de dois fatores." });
+  }
+});
+
+// POST /api/auth/mfa/ativar — confirma o primeiro código gerado pela app e,
+// se bater certo, ativa definitivamente a 2FA nesta conta.
+router.post("/mfa/ativar", autenticar, async (req, res) => {
+  const { code } = req.body;
+  if (!code) return res.status(400).json({ erro: "Indique o código de 6 dígitos." });
+  try {
+    const { rows } = await pool.query(`SELECT mfa_secret FROM gpitrack.users WHERE id = $1`, [req.user.id]);
+    const secret = rows[0]?.mfa_secret;
+    if (!secret) return res.status(400).json({ erro: "Peça primeiro o QR code em \"Configurar\"." });
+    if (!authenticator.check(String(code).trim(), secret)) {
+      return res.status(400).json({ erro: "Código incorreto. Confirme a hora do telemóvel e tente de novo." });
+    }
+    await pool.query(`UPDATE gpitrack.users SET mfa_enabled = true WHERE id = $1`, [req.user.id]);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: "Erro ao ativar a autenticação de dois fatores." });
+  }
+});
+
+// POST /api/auth/mfa/desativar — exige a password atual (contas Google-only
+// sem password confirmam só com o código atual da app, como alternativa).
+router.post("/mfa/desativar", autenticar, async (req, res) => {
+  const { password, code } = req.body;
+  try {
+    const { rows } = await pool.query(
+      `SELECT password_hash, mfa_secret, mfa_enabled FROM gpitrack.users WHERE id = $1`,
+      [req.user.id]
+    );
+    const user = rows[0];
+    if (!user || !user.mfa_enabled) return res.status(400).json({ erro: "A autenticação de dois fatores não está ativa." });
+
+    let confirmado = false;
+    if (user.password_hash && password) {
+      confirmado = await bcrypt.compare(password, user.password_hash);
+    } else if (code) {
+      confirmado = authenticator.check(String(code).trim(), user.mfa_secret);
+    }
+    if (!confirmado) return res.status(401).json({ erro: "Confirmação incorreta." });
+
+    await pool.query(`UPDATE gpitrack.users SET mfa_enabled = false, mfa_secret = NULL WHERE id = $1`, [req.user.id]);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: "Erro ao desativar a autenticação de dois fatores." });
+  }
+});
+
 // GET /api/auth/eu — dados do utilizador autenticado (revalida estado atual na BD)
 router.get("/eu", autenticar, async (req, res) => {
   try {
     const { rows } = await pool.query(
-      `SELECT id, name, email, avatar_color, role, is_active, email_notificacoes FROM gpitrack.users WHERE id = $1`,
+      `SELECT id, name, email, avatar_color, role, is_active, email_notificacoes, mfa_enabled,
+              (password_hash IS NOT NULL) AS tem_password
+       FROM gpitrack.users WHERE id = $1`,
       [req.user.id]
     );
     const atual = rows[0];
@@ -179,7 +305,7 @@ router.post("/google", async (req, res) => {
     }
 
     const { rows } = await pool.query(
-      `SELECT id, name, email, avatar_color, role, is_active, google_id
+      `SELECT id, name, email, avatar_color, role, is_active, google_id, mfa_enabled
        FROM gpitrack.users WHERE google_id = $1 OR lower(email) = lower($2)
        ORDER BY (google_id = $1) DESC NULLS LAST LIMIT 1`,
       [dados.sub, dados.email]
@@ -193,7 +319,15 @@ router.post("/google", async (req, res) => {
       }
       if (!user.google_id) {
         // Conta já existente com o mesmo e-mail (verificado pelo Google): associa-a.
-        await pool.query(`UPDATE gpitrack.users SET google_id = $1 WHERE id = $2`, [dados.sub, user.id]);
+        // O e-mail de uma conta criada com password nunca foi confirmado; por isso, se alguém
+        // se tivesse registado antes com o e-mail de outra pessoa, ficaria com acesso à conta
+        // dela depois de esta entrar com o Google. Para o impedir, a password antiga é
+        // anulada ao associar — a pessoa entra com o Google (ou define uma nova password
+        // em "Esqueceu a password?").
+        await pool.query(
+          `UPDATE gpitrack.users SET google_id = $1, password_hash = NULL WHERE id = $2`,
+          [dados.sub, user.id]
+        );
       }
     } else {
       const { rows: contagem } = await pool.query(`SELECT COUNT(*)::int AS total FROM gpitrack.users`);
@@ -207,6 +341,12 @@ router.post("/google", async (req, res) => {
       );
       user = inserido.rows[0];
       novo = true;
+    }
+
+    // Contas com autenticação de dois fatores: o Google não dispensa o código da app
+    // autenticadora (igual ao que acontece no login com password).
+    if (user.mfa_enabled) {
+      return res.json({ mfa_required: true, mfa_token: assinarTokenMFA(user.id) });
     }
 
     // Mesma regra de sessão única do login normal.

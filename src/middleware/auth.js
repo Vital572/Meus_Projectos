@@ -19,6 +19,15 @@ function assinarToken(user) {
   );
 }
 
+// Token intermédio, de vida muito curta, emitido depois da password estar
+// correta mas antes do código de autenticação de dois fatores (2FA) ser
+// verificado. Tem um "mfaPending: true" só para que "autenticar" o recuse —
+// nunca pode ser usado para aceder à API como se fosse uma sessão normal,
+// mesmo que alguém o intercete nesses 5 minutos.
+function assinarTokenMFA(userId) {
+  return jwt.sign({ id: userId, mfaPending: true }, JWT_SECRET, { expiresIn: "5m" });
+}
+
 function autenticar(req, res, next) {
   // O cabeçalho Authorization (enviado a partir do sessionStorage, isolado por
   // separador do navegador) tem prioridade. O parâmetro ?token= existe para
@@ -31,6 +40,9 @@ function autenticar(req, res, next) {
   }
   try {
     const payload = jwt.verify(token, JWT_SECRET);
+    // Um token "mfaPending" só serve para o passo de verificação do código de
+    // dois fatores (ver /api/auth/mfa/verificar-login) — nunca é uma sessão válida.
+    if (payload.mfaPending) return res.status(401).json({ erro: "Sessão inválida ou expirada." });
     req.user = payload;
     next();
   } catch (err) {
@@ -61,4 +73,4 @@ async function exigirAdmin(req, res, next) {
   }
 }
 
-module.exports = { assinarToken, autenticar, exigirAdmin, JWT_SECRET };
+module.exports = { assinarToken, assinarTokenMFA, autenticar, exigirAdmin, JWT_SECRET };

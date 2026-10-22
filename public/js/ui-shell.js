@@ -55,3 +55,12 @@ function iniciarUIShell() {
 }
 
 iniciarUIShell();
+
+// ---------------- PWA: instalar e funcionar offline ----------------
+// Regista o service worker (molde da app guardado em cache) para que as
+// páginas já visitadas abram mesmo sem ligação à internet.
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/service-worker.js").catch(() => {});
+  });
+}

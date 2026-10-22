@@ -1,9 +1,11 @@
 const express = require("express");
 const multer = require("multer");
+const XLSX = require("xlsx");
 const pool = require("../../db/pool");
 const { autenticar } = require("../middleware/auth");
 const { ehDonoDoProjetoOuAdmin, obterProjeto, ehMembroDoProjeto } = require("../lib/permissions");
 const { notificar } = require("../lib/notify");
+const { novoDocumento, gerarExportacaoQuadro } = require("../lib/pdfReport");
 const storage = require("../lib/storage");
 
 const router = express.Router();
@@ -41,7 +43,12 @@ router.get("/", async (req, res) => {
   try {
     const { rows } = await pool.query(
       `SELECT p.id, p.name, p.description, p.created_at, p.created_by, pm.role AS meu_papel,
-              (SELECT COUNT(*) FROM gpitrack.tasks t WHERE t.project_id = p.id) AS total_tarefas
+              (SELECT COUNT(*) FROM gpitrack.tasks t WHERE t.project_id = p.id) AS total_tarefas,
+              (SELECT COUNT(*)::int FROM gpitrack.tasks t JOIN gpitrack.board_columns c ON c.id = t.column_id
+                WHERE t.project_id = p.id AND c.is_done) AS tarefas_concluidas,
+              (SELECT COUNT(*)::int FROM gpitrack.tasks t LEFT JOIN gpitrack.board_columns c ON c.id = t.column_id
+                WHERE t.project_id = p.id AND t.due_date < CURRENT_DATE AND NOT COALESCE(c.is_done, false)) AS tarefas_atrasadas,
+              (SELECT COUNT(*)::int FROM gpitrack.project_members m WHERE m.project_id = p.id AND m.status = 'ativo') AS total_membros
        FROM gpitrack.projects p
        JOIN gpitrack.project_members pm ON pm.project_id = p.id
        WHERE pm.user_id = $1 AND pm.status = 'ativo'
@@ -183,82 +190,157 @@ router.delete("/:id", async (req, res) => {
 });
 
 // GET /api/projects/:id/quadro — colunas + tarefas + membros (dados completos do quadro)
+// Monta o quadro (colunas + tarefas, já filtrado pelas regras de visibilidade)
+// de um projeto para um utilizador — partilhado entre a rota do quadro em si
+// e as exportações (PDF/Excel), para nunca exportar o que a pessoa não veria
+// no ecrã.
+async function obterQuadroVisivel(user, id) {
+  const membro = await pool.query(
+    `SELECT role FROM gpitrack.project_members WHERE project_id = $1 AND user_id = $2 AND status = 'ativo'`,
+    [id, user.id]
+  );
+  if (membro.rowCount === 0 && user.role !== "admin") {
+    const erro = new Error("Sem acesso a este projeto.");
+    erro.status = 403;
+    throw erro;
+  }
+
+  const souResponsavel = user.role === "admin" || membro.rows[0]?.role === "responsavel";
+
+  const colunas = await pool.query(
+    `SELECT id, name, position, is_done, restricted FROM gpitrack.board_columns WHERE project_id = $1 ORDER BY position`,
+    [id]
+  );
+  const tarefas = await pool.query(
+    `SELECT t.id, t.column_id, t.title, t.description, t.priority, t.due_date, t.start_date, t.position,
+            t.created_by, t.created_at, t.updated_at, t.visibility, t.parent_task_id,
+            u.id AS assignee_id, u.name AS assignee_name, u.avatar_color AS assignee_color,
+            COALESCE(lbl.etiquetas, '[]'::json) AS labels,
+            COALESCE(chk.total, 0) AS checklist_total,
+            COALESCE(chk.feitos, 0) AS checklist_feitos,
+            COALESCE(sub.total, 0) AS subtarefas_total,
+            EXISTS (SELECT 1 FROM gpitrack.task_responsibles tr WHERE tr.task_id = t.id AND tr.user_id = $2) AS sou_responsavel_tarefa
+     FROM gpitrack.tasks t
+     LEFT JOIN gpitrack.users u ON u.id = t.assignee_id
+     LEFT JOIN LATERAL (
+       SELECT json_agg(json_build_object('id', l.id, 'name', l.name, 'color', l.color)) AS etiquetas
+       FROM gpitrack.task_labels tl
+       JOIN gpitrack.labels l ON l.id = tl.label_id
+       WHERE tl.task_id = t.id
+     ) lbl ON true
+     LEFT JOIN LATERAL (
+       SELECT COUNT(*)::int AS total, COUNT(*) FILTER (WHERE is_done)::int AS feitos
+       FROM gpitrack.checklist_items ci
+       WHERE ci.task_id = t.id
+     ) chk ON true
+     LEFT JOIN LATERAL (
+       SELECT COUNT(*)::int AS total FROM gpitrack.tasks sub WHERE sub.parent_task_id = t.id
+     ) sub ON true
+     WHERE t.project_id = $1
+     ORDER BY t.position ASC`,
+    [id, user.id]
+  );
+  // Colunas restritas (ex.: "Em Revisão", ou "Concluído" marcada como restrita)
+  // só ficam visíveis, com todas as suas tarefas, para responsáveis/admin. Mas
+  // uma pessoa que já estava a trabalhar numa tarefa sua — por ser o atribuído
+  // ou um responsável extra dela — não perde o acesso a essa tarefa só porque
+  // ela foi movida para lá: continua a vê-la e a conseguir comentar/anexar
+  // ficheiros, só não vê as restantes tarefas dessa coluna.
+  const colunasPorId = new Map(colunas.rows.map((c) => [c.id, c]));
+  const ehTarefaMinha = (t) => t.assignee_id === user.id || t.sou_responsavel_tarefa;
+
+  const tarefasVisiveis = tarefas.rows.filter((t) => {
+    const coluna = colunasPorId.get(t.column_id);
+    if (!coluna) return false;
+    if (coluna.restricted && !souResponsavel && !ehTarefaMinha(t)) return false;
+    if (t.visibility === "restrita" && !souResponsavel && !ehTarefaMinha(t)) return false;
+    return true;
+  });
+
+  const idsColunasComTarefaVisivel = new Set(tarefasVisiveis.map((t) => t.column_id));
+  const colunasVisiveis = souResponsavel
+    ? colunas.rows
+    : colunas.rows.filter((c) => !c.restricted || idsColunasComTarefaVisivel.has(c.id));
+
+  const membros = await pool.query(
+    `SELECT u.id, u.name, u.email, u.avatar_color, pm.role
+     FROM gpitrack.project_members pm
+     JOIN gpitrack.users u ON u.id = pm.user_id
+     WHERE pm.project_id = $1 AND pm.status = 'ativo'
+     ORDER BY (pm.role = 'responsavel') DESC, u.name`,
+    [id]
+  );
+  const projeto = await obterProjeto(id);
+
+  return { colunas: colunasVisiveis, tarefas: tarefasVisiveis, membros: membros.rows, projeto, souResponsavel };
+}
+
 router.get("/:id/quadro", async (req, res) => {
-  const { id } = req.params;
   try {
-    const membro = await pool.query(
-      `SELECT role FROM gpitrack.project_members WHERE project_id = $1 AND user_id = $2 AND status = 'ativo'`,
-      [id, req.user.id]
-    );
-    if (membro.rowCount === 0 && req.user.role !== "admin") return res.status(403).json({ erro: "Sem acesso a este projeto." });
-
-    const souResponsavel = req.user.role === "admin" || membro.rows[0]?.role === "responsavel";
-
-    const colunas = await pool.query(
-      `SELECT id, name, position, is_done, restricted FROM gpitrack.board_columns WHERE project_id = $1 ORDER BY position`,
-      [id]
-    );
-    const tarefas = await pool.query(
-      `SELECT t.id, t.column_id, t.title, t.description, t.priority, t.due_date, t.position,
-              t.created_by, t.created_at, t.updated_at, t.visibility,
-              u.id AS assignee_id, u.name AS assignee_name, u.avatar_color AS assignee_color,
-              COALESCE(lbl.etiquetas, '[]'::json) AS labels,
-              COALESCE(chk.total, 0) AS checklist_total,
-              COALESCE(chk.feitos, 0) AS checklist_feitos,
-              EXISTS (SELECT 1 FROM gpitrack.task_responsibles tr WHERE tr.task_id = t.id AND tr.user_id = $2) AS sou_responsavel_tarefa
-       FROM gpitrack.tasks t
-       LEFT JOIN gpitrack.users u ON u.id = t.assignee_id
-       LEFT JOIN LATERAL (
-         SELECT json_agg(json_build_object('id', l.id, 'name', l.name, 'color', l.color)) AS etiquetas
-         FROM gpitrack.task_labels tl
-         JOIN gpitrack.labels l ON l.id = tl.label_id
-         WHERE tl.task_id = t.id
-       ) lbl ON true
-       LEFT JOIN LATERAL (
-         SELECT COUNT(*)::int AS total, COUNT(*) FILTER (WHERE is_done)::int AS feitos
-         FROM gpitrack.checklist_items ci
-         WHERE ci.task_id = t.id
-       ) chk ON true
-       WHERE t.project_id = $1
-       ORDER BY t.position ASC`,
-      [id, req.user.id]
-    );
-    // Colunas restritas (ex.: "Em Revisão", ou "Concluído" marcada como restrita)
-    // só ficam visíveis, com todas as suas tarefas, para responsáveis/admin. Mas
-    // uma pessoa que já estava a trabalhar numa tarefa sua — por ser o atribuído
-    // ou um responsável extra dela — não perde o acesso a essa tarefa só porque
-    // ela foi movida para lá: continua a vê-la e a conseguir comentar/anexar
-    // ficheiros, só não vê as restantes tarefas dessa coluna.
-    const colunasPorId = new Map(colunas.rows.map((c) => [c.id, c]));
-    const ehTarefaMinha = (t) => t.assignee_id === req.user.id || t.sou_responsavel_tarefa;
-
-    const tarefasVisiveis = tarefas.rows.filter((t) => {
-      const coluna = colunasPorId.get(t.column_id);
-      if (!coluna) return false;
-      if (coluna.restricted && !souResponsavel && !ehTarefaMinha(t)) return false;
-      if (t.visibility === "restrita" && !souResponsavel && !ehTarefaMinha(t)) return false;
-      return true;
-    });
-
-    const idsColunasComTarefaVisivel = new Set(tarefasVisiveis.map((t) => t.column_id));
-    const colunasVisiveis = souResponsavel
-      ? colunas.rows
-      : colunas.rows.filter((c) => !c.restricted || idsColunasComTarefaVisivel.has(c.id));
-
-    const membros = await pool.query(
-      `SELECT u.id, u.name, u.email, u.avatar_color, pm.role
-       FROM gpitrack.project_members pm
-       JOIN gpitrack.users u ON u.id = pm.user_id
-       WHERE pm.project_id = $1 AND pm.status = 'ativo'
-       ORDER BY (pm.role = 'responsavel') DESC, u.name`,
-      [id]
-    );
-    const projeto = await obterProjeto(id);
-
-    res.json({ colunas: colunasVisiveis, tarefas: tarefasVisiveis, membros: membros.rows, projeto, sou_responsavel: souResponsavel });
+    const quadro = await obterQuadroVisivel(req.user, req.params.id);
+    res.json({ colunas: quadro.colunas, tarefas: quadro.tarefas, membros: quadro.membros, projeto: quadro.projeto, sou_responsavel: quadro.souResponsavel });
   } catch (err) {
+    if (err.status) return res.status(err.status).json({ erro: err.message });
     console.error(err);
     res.status(500).json({ erro: "Erro ao obter o quadro do projeto." });
+  }
+});
+
+// ---------------- Exportar o quadro (PDF / Excel) ----------------
+// Qualquer membro pode exportar — o conteúdo exportado segue exatamente as
+// mesmas regras de visibilidade do quadro no ecrã (obterQuadroVisivel).
+
+// GET /api/projects/:id/exportar/pdf
+router.get("/:id/exportar/pdf", async (req, res) => {
+  try {
+    const quadro = await obterQuadroVisivel(req.user, req.params.id);
+    const doc = novoDocumento();
+    const nomeFicheiro = `${(quadro.projeto.name || "projeto").replace(/[^a-z0-9]+/gi, "-").toLowerCase()}-${new Date().toISOString().slice(0, 10)}.pdf`;
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="${nomeFicheiro}"`);
+    doc.pipe(res);
+    gerarExportacaoQuadro(doc, { projeto: quadro.projeto, colunas: quadro.colunas, tarefas: quadro.tarefas.map((t) => ({ ...t, concluida: quadro.colunas.find((c) => c.id === t.column_id)?.is_done })) }, req.user.name);
+    doc.end();
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ erro: err.message });
+    console.error(err);
+    res.status(500).json({ erro: "Erro ao gerar o PDF do quadro." });
+  }
+});
+
+// GET /api/projects/:id/exportar/excel
+router.get("/:id/exportar/excel", async (req, res) => {
+  try {
+    const quadro = await obterQuadroVisivel(req.user, req.params.id);
+    const colunasPorId = new Map(quadro.colunas.map((c) => [c.id, c]));
+
+    const linhas = quadro.tarefas.map((t) => ({
+      Tarefa: t.title,
+      Coluna: colunasPorId.get(t.column_id)?.name || "",
+      Prioridade: t.priority,
+      Responsável: t.assignee_name || "",
+      Início: t.start_date ? new Date(t.start_date).toLocaleDateString("pt-PT") : "",
+      Prazo: t.due_date ? new Date(t.due_date).toLocaleDateString("pt-PT") : "",
+      Etiquetas: (t.labels || []).map((l) => l.name).join(", "),
+      Checklist: t.checklist_total > 0 ? `${t.checklist_feitos}/${t.checklist_total}` : "",
+      Visibilidade: t.visibility === "restrita" ? "Restrita" : "Equipa",
+    }));
+
+    const livro = XLSX.utils.book_new();
+    const folha = XLSX.utils.json_to_sheet(linhas);
+    folha["!cols"] = [{ wch: 32 }, { wch: 16 }, { wch: 12 }, { wch: 20 }, { wch: 12 }, { wch: 12 }, { wch: 24 }, { wch: 10 }, { wch: 12 }];
+    XLSX.utils.book_append_sheet(livro, folha, "Tarefas");
+
+    const buffer = XLSX.write(livro, { type: "buffer", bookType: "xlsx" });
+    const nomeFicheiro = `${(quadro.projeto.name || "projeto").replace(/[^a-z0-9]+/gi, "-").toLowerCase()}-${new Date().toISOString().slice(0, 10)}.xlsx`;
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", `attachment; filename="${nomeFicheiro}"`);
+    res.send(buffer);
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ erro: err.message });
+    console.error(err);
+    res.status(500).json({ erro: "Erro ao gerar o Excel do quadro." });
   }
 });
 
@@ -468,6 +550,180 @@ router.delete("/etiquetas/:labelId", async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ erro: "Erro ao eliminar etiqueta." });
+  }
+});
+
+// ---------------- Campos personalizados (Monday.com / Smartsheet) ----------------
+
+// GET /api/projects/:id/campos — lista os campos personalizados do projeto
+router.get("/:id/campos", async (req, res) => {
+  try {
+    const souMembro = await ehMembroDoProjeto(req.user, req.params.id);
+    if (!souMembro) return res.status(403).json({ erro: "Sem acesso a este projeto." });
+    const { rows } = await pool.query(
+      `SELECT id, name, type, options, position FROM gpitrack.project_custom_fields
+       WHERE project_id = $1 ORDER BY position, created_at`,
+      [req.params.id]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: "Erro ao obter campos personalizados." });
+  }
+});
+
+// POST /api/projects/:id/campos — cria um campo personalizado (só responsáveis/admin)
+router.post("/:id/campos", async (req, res) => {
+  const { name, type, options } = req.body;
+  if (!name) return res.status(400).json({ erro: "O nome do campo é obrigatório." });
+  const tiposValidos = ["texto", "numero", "data", "lista"];
+  const tipo = tiposValidos.includes(type) ? type : "texto";
+  try {
+    const autorizado = await ehDonoDoProjetoOuAdmin(req.user, req.params.id);
+    if (!autorizado) return res.status(403).json({ erro: "Só responsáveis do projeto ou administradores podem criar campos personalizados." });
+
+    const { rows: posRows } = await pool.query(
+      `SELECT COALESCE(MAX(position), -1) + 1 AS pos FROM gpitrack.project_custom_fields WHERE project_id = $1`,
+      [req.params.id]
+    );
+    const { rows } = await pool.query(
+      `INSERT INTO gpitrack.project_custom_fields (project_id, name, type, options, position)
+       VALUES ($1, $2, $3, $4, $5) RETURNING id, name, type, options, position`,
+      [req.params.id, name, tipo, tipo === "lista" && Array.isArray(options) ? JSON.stringify(options) : null, posRows[0].pos]
+    );
+    const io = req.app.get("io");
+    io.to(`project:${req.params.id}`).emit("campo:criado", rows[0]);
+    res.status(201).json(rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: "Erro ao criar campo personalizado." });
+  }
+});
+
+// DELETE /api/projects/campos/:fieldId — elimina um campo personalizado (só responsáveis/admin)
+router.delete("/campos/:fieldId", async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT project_id FROM gpitrack.project_custom_fields WHERE id = $1`,
+      [req.params.fieldId]
+    );
+    if (rows.length === 0) return res.status(404).json({ erro: "Campo não encontrado." });
+    const projectId = rows[0].project_id;
+    const autorizado = await ehDonoDoProjetoOuAdmin(req.user, projectId);
+    if (!autorizado) return res.status(403).json({ erro: "Só responsáveis do projeto ou administradores podem eliminar campos." });
+
+    await pool.query(`DELETE FROM gpitrack.project_custom_fields WHERE id = $1`, [req.params.fieldId]);
+    const io = req.app.get("io");
+    io.to(`project:${projectId}`).emit("campo:eliminado", { fieldId: req.params.fieldId });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: "Erro ao eliminar campo personalizado." });
+  }
+});
+
+// ---------------- Metas do projeto (ClickUp) ----------------
+
+// GET /api/projects/:id/metas — metas com progresso (% de tarefas ligadas já concluídas)
+router.get("/:id/metas", async (req, res) => {
+  try {
+    const souMembro = await ehMembroDoProjeto(req.user, req.params.id);
+    if (!souMembro) return res.status(403).json({ erro: "Sem acesso a este projeto." });
+
+    const { rows } = await pool.query(
+      `SELECT g.id, g.name, g.description, g.target_date,
+              COUNT(gt.task_id)::int AS total_tarefas,
+              COUNT(gt.task_id) FILTER (WHERE c.is_done)::int AS tarefas_concluidas
+       FROM gpitrack.project_goals g
+       LEFT JOIN gpitrack.goal_tasks gt ON gt.goal_id = g.id
+       LEFT JOIN gpitrack.tasks t ON t.id = gt.task_id
+       LEFT JOIN gpitrack.board_columns c ON c.id = t.column_id
+       WHERE g.project_id = $1
+       GROUP BY g.id ORDER BY g.created_at`,
+      [req.params.id]
+    );
+    res.json(rows.map((g) => ({
+      ...g,
+      progresso: g.total_tarefas > 0 ? Math.round((g.tarefas_concluidas / g.total_tarefas) * 100) : 0,
+    })));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: "Erro ao obter metas." });
+  }
+});
+
+// POST /api/projects/:id/metas — cria uma meta (só responsáveis/admin)
+router.post("/:id/metas", async (req, res) => {
+  const { name, description, target_date } = req.body;
+  if (!name || !name.trim()) return res.status(400).json({ erro: "O nome da meta é obrigatório." });
+  try {
+    const autorizado = await ehDonoDoProjetoOuAdmin(req.user, req.params.id);
+    if (!autorizado) return res.status(403).json({ erro: "Só responsáveis do projeto ou administradores podem criar metas." });
+
+    const { rows } = await pool.query(
+      `INSERT INTO gpitrack.project_goals (project_id, name, description, target_date, created_by)
+       VALUES ($1, $2, $3, $4, $5) RETURNING id, name, description, target_date`,
+      [req.params.id, name.trim(), description || null, target_date || null, req.user.id]
+    );
+    const io = req.app.get("io");
+    io.to(`project:${req.params.id}`).emit("meta:criada", rows[0]);
+    res.status(201).json({ ...rows[0], total_tarefas: 0, tarefas_concluidas: 0, progresso: 0 });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: "Erro ao criar meta." });
+  }
+});
+
+// DELETE /api/projects/metas/:goalId
+router.delete("/metas/:goalId", async (req, res) => {
+  try {
+    const { rows } = await pool.query(`SELECT project_id FROM gpitrack.project_goals WHERE id = $1`, [req.params.goalId]);
+    if (rows.length === 0) return res.status(404).json({ erro: "Meta não encontrada." });
+    const projectId = rows[0].project_id;
+    const autorizado = await ehDonoDoProjetoOuAdmin(req.user, projectId);
+    if (!autorizado) return res.status(403).json({ erro: "Só responsáveis do projeto ou administradores podem eliminar metas." });
+
+    await pool.query(`DELETE FROM gpitrack.project_goals WHERE id = $1`, [req.params.goalId]);
+    const io = req.app.get("io");
+    io.to(`project:${projectId}`).emit("meta:eliminada", { goalId: req.params.goalId });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: "Erro ao eliminar meta." });
+  }
+});
+
+// PUT /api/projects/metas/:goalId/tarefas/:taskId — liga/desliga uma tarefa a uma meta
+router.put("/metas/:goalId/tarefas/:taskId", async (req, res) => {
+  try {
+    const { rows } = await pool.query(`SELECT project_id FROM gpitrack.project_goals WHERE id = $1`, [req.params.goalId]);
+    if (rows.length === 0) return res.status(404).json({ erro: "Meta não encontrada." });
+    const autorizado = await ehDonoDoProjetoOuAdmin(req.user, rows[0].project_id);
+    if (!autorizado) return res.status(403).json({ erro: "Só responsáveis do projeto ou administradores podem ligar tarefas a metas." });
+
+    await pool.query(
+      `INSERT INTO gpitrack.goal_tasks (goal_id, task_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+      [req.params.goalId, req.params.taskId]
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: "Erro ao ligar tarefa à meta." });
+  }
+});
+
+router.delete("/metas/:goalId/tarefas/:taskId", async (req, res) => {
+  try {
+    const { rows } = await pool.query(`SELECT project_id FROM gpitrack.project_goals WHERE id = $1`, [req.params.goalId]);
+    if (rows.length === 0) return res.status(404).json({ erro: "Meta não encontrada." });
+    const autorizado = await ehDonoDoProjetoOuAdmin(req.user, rows[0].project_id);
+    if (!autorizado) return res.status(403).json({ erro: "Só responsáveis do projeto ou administradores podem gerir tarefas das metas." });
+
+    await pool.query(`DELETE FROM gpitrack.goal_tasks WHERE goal_id = $1 AND task_id = $2`, [req.params.goalId, req.params.taskId]);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: "Erro ao desligar tarefa da meta." });
   }
 });
 
@@ -873,16 +1129,31 @@ router.get("/:id/mensagens", async (req, res) => {
 
     const { rows } = await pool.query(
       `SELECT cm.id, cm.content, cm.type, cm.file_name, cm.file_size, cm.mime_type, cm.duration_seconds,
-              cm.created_at, cm.edited_at, cm.deleted_at,
-              u.id AS user_id, u.name AS autor_nome, u.avatar_color
+              cm.created_at, cm.edited_at, cm.deleted_at, cm.reply_to_id,
+              u.id AS user_id, u.name AS autor_nome, u.avatar_color,
+              rt.autor_nome AS reply_to_autor, rt.preview AS reply_to_preview,
+              COALESCE(rc.reacoes, '[]'::json) AS reacoes
        FROM gpitrack.channel_messages cm
        JOIN gpitrack.users u ON u.id = cm.user_id
+       LEFT JOIN LATERAL (
+         SELECT ru.name AS autor_nome,
+                CASE WHEN rm.deleted_at IS NOT NULL THEN 'Mensagem eliminada'
+                     WHEN rm.type = 'texto' THEN rm.content
+                     ELSE COALESCE(rm.file_name, 'ficheiro') END AS preview
+         FROM gpitrack.channel_messages rm
+         JOIN gpitrack.users ru ON ru.id = rm.user_id
+         WHERE rm.id = cm.reply_to_id
+       ) rt ON true
+       LEFT JOIN LATERAL (
+         SELECT json_agg(json_build_object('emoji', r.emoji, 'user_id', r.user_id)) AS reacoes
+         FROM gpitrack.channel_message_reactions r WHERE r.message_id = cm.id
+       ) rc ON true
        WHERE cm.project_id = $1
          AND NOT EXISTS (
            SELECT 1 FROM gpitrack.channel_message_hidden h WHERE h.message_id = cm.id AND h.user_id = $2
          )
        ORDER BY cm.created_at ASC
-       LIMIT 200`,
+       LIMIT 300`,
       [req.params.id, req.user.id]
     );
     res.json(rows.map(formatarMensagemCanal));
@@ -900,7 +1171,8 @@ function formatarMensagemCanal(m) {
     return {
       id: m.id, user_id: m.user_id, autor_nome: m.autor_nome, avatar_color: m.avatar_color,
       created_at: m.created_at, type: "texto", content: null, deleted_at: m.deleted_at,
-      edited_at: null, file_name: null, url: null,
+      edited_at: null, file_name: null, url: null, reply_to_id: null, reply_to_autor: null,
+      reply_to_preview: null, reacoes: [],
     };
   }
   return { ...m, url: m.file_name ? `/api/projects/mensagens/${m.id}/ficheiro` : null };
@@ -908,23 +1180,69 @@ function formatarMensagemCanal(m) {
 
 // POST /api/projects/:id/mensagens — mensagem de texto
 router.post("/:id/mensagens", async (req, res) => {
-  const { content } = req.body;
+  const { content, reply_to_id } = req.body;
   if (!content || !content.trim()) return res.status(400).json({ erro: "A mensagem não pode estar vazia." });
 
   try {
     const podeEnviar = await ehMembroDoProjeto(req.user, req.params.id);
     if (!podeEnviar) return res.status(403).json({ erro: "Sem permissão para enviar mensagens neste projeto." });
 
+    // A resposta só é aceite se apontar para uma mensagem real do mesmo projeto.
+    let replyToIdValido = null;
+    let replyToPreview = null;
+    if (reply_to_id) {
+      const { rows: origRows } = await pool.query(
+        `SELECT cm.id, cm.content, cm.type, cm.file_name, cm.deleted_at, u.name AS autor_nome
+         FROM gpitrack.channel_messages cm JOIN gpitrack.users u ON u.id = cm.user_id
+         WHERE cm.id = $1 AND cm.project_id = $2`,
+        [reply_to_id, req.params.id]
+      );
+      if (origRows.length > 0) {
+        replyToIdValido = origRows[0].id;
+        replyToPreview = {
+          autor_nome: origRows[0].autor_nome,
+          preview: origRows[0].deleted_at ? "Mensagem eliminada" : origRows[0].type === "texto" ? origRows[0].content : (origRows[0].file_name || "ficheiro"),
+        };
+      }
+    }
+
     const { rows } = await pool.query(
-      `INSERT INTO gpitrack.channel_messages (project_id, user_id, content, type)
-       VALUES ($1, $2, $3, 'texto')
-       RETURNING id, content, type, created_at`,
-      [req.params.id, req.user.id, content.trim()]
+      `INSERT INTO gpitrack.channel_messages (project_id, user_id, content, type, reply_to_id)
+       VALUES ($1, $2, $3, 'texto', $4)
+       RETURNING id, content, type, created_at, reply_to_id`,
+      [req.params.id, req.user.id, content.trim(), replyToIdValido]
     );
-    const mensagem = { ...rows[0], user_id: req.user.id, autor_nome: req.user.name, avatar_color: req.user.avatar_color };
+    const mensagem = {
+      ...rows[0], user_id: req.user.id, autor_nome: req.user.name, avatar_color: req.user.avatar_color,
+      reply_to_autor: replyToPreview?.autor_nome || null, reply_to_preview: replyToPreview?.preview || null,
+      reacoes: [],
+    };
 
     const io = req.app.get("io");
     io.to(`project:${req.params.id}`).emit("channel:message", mensagem);
+
+    // Deteta menções simples do tipo @Nome na mensagem do canal (mesma regra
+    // usada nos comentários de tarefa: compara com o primeiro nome).
+    const mencoes = [...content.matchAll(/@(\w+)/g)].map((m) => m[1].toLowerCase());
+    if (mencoes.length > 0) {
+      const { rows: membros } = await pool.query(
+        `SELECT u.id, u.name FROM gpitrack.project_members pm
+         JOIN gpitrack.users u ON u.id = pm.user_id WHERE pm.project_id = $1 AND pm.status = 'ativo'`,
+        [req.params.id]
+      );
+      const { rows: projRows } = await pool.query(`SELECT name FROM gpitrack.projects WHERE id = $1`, [req.params.id]);
+      for (const membro of membros) {
+        const primeiroNome = membro.name.split(" ")[0].toLowerCase();
+        if (mencoes.includes(primeiroNome) && membro.id !== req.user.id) {
+          await notificar(io, {
+            userId: membro.id,
+            type: "mention",
+            content: `${req.user.name} mencionou-o(a) na conversa do projeto "${projRows[0]?.name}".`,
+            projectId: req.params.id,
+          });
+        }
+      }
+    }
 
     res.status(201).json(mensagem);
   } catch (err) {
@@ -1050,6 +1368,51 @@ router.delete("/mensagens/:messageId", async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ erro: "Erro ao eliminar a mensagem." });
+  }
+});
+
+// POST /api/projects/mensagens/:messageId/reacoes — alterna (adiciona/remove) uma
+// reação emoji da própria pessoa a uma mensagem (Slack). Devolve a lista
+// completa de reações atualizada, para a interface sincronizar sem recarregar.
+router.post("/mensagens/:messageId/reacoes", async (req, res) => {
+  const { emoji } = req.body;
+  if (!emoji || typeof emoji !== "string" || emoji.length > 16) {
+    return res.status(400).json({ erro: "Emoji inválido." });
+  }
+  try {
+    const { rows } = await pool.query(
+      `SELECT project_id, deleted_at FROM gpitrack.channel_messages WHERE id = $1`,
+      [req.params.messageId]
+    );
+    const msg = rows[0];
+    if (!msg) return res.status(404).json({ erro: "Mensagem não encontrada." });
+    if (msg.deleted_at) return res.status(400).json({ erro: "Esta mensagem foi eliminada." });
+
+    const podeVer = await ehMembroDoProjeto(req.user, msg.project_id);
+    if (!podeVer) return res.status(403).json({ erro: "Sem permissão nesta conversa." });
+
+    const { rowCount: jaReagiu } = await pool.query(
+      `DELETE FROM gpitrack.channel_message_reactions WHERE message_id = $1 AND user_id = $2 AND emoji = $3`,
+      [req.params.messageId, req.user.id, emoji]
+    );
+    if (jaReagiu === 0) {
+      await pool.query(
+        `INSERT INTO gpitrack.channel_message_reactions (message_id, user_id, emoji) VALUES ($1, $2, $3)
+         ON CONFLICT DO NOTHING`,
+        [req.params.messageId, req.user.id, emoji]
+      );
+    }
+
+    const { rows: reacoes } = await pool.query(
+      `SELECT emoji, user_id FROM gpitrack.channel_message_reactions WHERE message_id = $1`,
+      [req.params.messageId]
+    );
+    const io = req.app.get("io");
+    io.to(`project:${msg.project_id}`).emit("channel:reaction", { messageId: req.params.messageId, reacoes });
+    res.json({ reacoes });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: "Erro ao reagir à mensagem." });
   }
 });
 

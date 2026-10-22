@@ -3,7 +3,7 @@ let socket = null;
 
 const rotuloTabs = {
   "visao-geral": "tab-visao-geral", "equipas": "tab-equipas", "projetos": "tab-projetos",
-  "tarefas": "tab-tarefas", "membros": "tab-membros", "atividades": "tab-atividades",
+  "tarefas": "tab-tarefas", "semana": "tab-semana", "membros": "tab-membros", "atividades": "tab-atividades",
   "relatorios": "tab-relatorios", "reunioes": "tab-reunioes", "feedback": "tab-feedback",
 };
 const rotuloPrioridade = { alta: "🔴 Alta", media: "🟡 Média", baixa: "🟢 Baixa" };
@@ -59,6 +59,7 @@ async function iniciar() {
       carregarEquipas(),
       carregarMeusProjetos(),
       carregarMinhasTarefas(),
+      carregarSemana(),
       carregarMembros(),
       carregarAtividadesWorkspace(),
       carregarRelatorioPessoal(),
@@ -132,6 +133,72 @@ async function carregarVisaoGeral() {
       mostrarToast(err.message);
     }
   };
+
+  // Segurança: mostra o bloco certo consoante a 2FA já esteja ativa ou não
+  document.getElementById("bloco-mfa-ativado").style.display = eu.mfa_enabled ? "flex" : "none";
+  document.getElementById("bloco-mfa-desativado").style.display = eu.mfa_enabled ? "none" : "flex";
+}
+
+// ---------------- Autenticação de dois fatores (2FA / TOTP) ----------------
+async function iniciarConfigMFA() {
+  try {
+    const { secret, qrCodeDataUrl } = await api.get("/api/auth/mfa/configurar");
+    document.getElementById("mfa-qrcode").innerHTML = `<img src="${qrCodeDataUrl}" alt="QR code" style="border-radius:10px;background:#fff;padding:8px" />`;
+    document.getElementById("mfa-chave-manual").value = secret;
+    document.getElementById("mfa-codigo-ativar").value = "";
+    document.getElementById("erro-mfa-ativar").style.display = "none";
+    document.getElementById("overlay-config-mfa").classList.add("open");
+  } catch (err) {
+    mostrarToast(err.message);
+  }
+}
+function fecharModalConfigMFA() {
+  document.getElementById("overlay-config-mfa").classList.remove("open");
+}
+async function confirmarAtivarMFA() {
+  const code = document.getElementById("mfa-codigo-ativar").value.trim();
+  const erroBox = document.getElementById("erro-mfa-ativar");
+  erroBox.style.display = "none";
+  if (!code) { erroBox.textContent = "Indique o código de 6 dígitos."; erroBox.style.display = "block"; return; }
+  try {
+    await api.post("/api/auth/mfa/ativar", { code });
+    eu.mfa_enabled = true;
+    fecharModalConfigMFA();
+    document.getElementById("bloco-mfa-ativado").style.display = "flex";
+    document.getElementById("bloco-mfa-desativado").style.display = "none";
+    mostrarToast("Autenticação de dois fatores ativada.");
+  } catch (err) {
+    erroBox.textContent = err.message;
+    erroBox.style.display = "block";
+  }
+}
+
+function abrirModalDesativarMFA() {
+  document.getElementById("mfa-codigo-desativar").value = "";
+  document.getElementById("erro-mfa-desativar").style.display = "none";
+  document.getElementById("overlay-desativar-mfa").classList.add("open");
+}
+function fecharModalDesativarMFA() {
+  document.getElementById("overlay-desativar-mfa").classList.remove("open");
+}
+async function confirmarDesativarMFA() {
+  const valor = document.getElementById("mfa-codigo-desativar").value.trim();
+  const erroBox = document.getElementById("erro-mfa-desativar");
+  erroBox.style.display = "none";
+  if (!valor) { erroBox.textContent = "Indique o código ou a sua password."; erroBox.style.display = "block"; return; }
+  // Um código TOTP tem sempre 6 dígitos; qualquer outra coisa é tratada como password.
+  const payload = /^\d{6}$/.test(valor) ? { code: valor } : { password: valor };
+  try {
+    await api.post("/api/auth/mfa/desativar", payload);
+    eu.mfa_enabled = false;
+    fecharModalDesativarMFA();
+    document.getElementById("bloco-mfa-ativado").style.display = "none";
+    document.getElementById("bloco-mfa-desativado").style.display = "flex";
+    mostrarToast("Autenticação de dois fatores desativada.");
+  } catch (err) {
+    erroBox.textContent = err.message;
+    erroBox.style.display = "block";
+  }
 }
 
 // ---------------- Equipas ----------------
@@ -203,6 +270,68 @@ async function carregarMinhasTarefas() {
       <td style="color:var(--ink-faint);font-size:12.5px">${t.due_date ? new Date(t.due_date).toLocaleDateString("pt-PT") : "—"}</td>
     </tr>
   `).join("") || `<tr><td colspan="5" style="text-align:center;color:var(--ink-faint)">Sem tarefas atribuídas a si.</td></tr>`;
+}
+
+// ---------------- Minha semana (Asana) ----------------
+// Agrupa as mesmas tarefas de "/api/workspace/tarefas" por prazo: atrasadas,
+// um grupo por cada um dos próximos 7 dias, e por fim as sem prazo definido.
+// Tarefas já concluídas (coluna "is_done") não aparecem aqui — já cumpriram
+// o prazo que tinham.
+async function carregarSemana() {
+  const todas = (await api.get("/api/workspace/tarefas")).filter((t) => !t.is_done);
+
+  const hoje = new Date();
+  hoje.setHours(0, 0, 0, 0);
+  const seteDias = new Date(hoje);
+  seteDias.setDate(seteDias.getDate() + 7);
+
+  const atrasadas = [];
+  const semPrazo = [];
+  const porDia = new Map(); // "YYYY-MM-DD" -> [tarefas]
+
+  todas.forEach((t) => {
+    if (!t.due_date) { semPrazo.push(t); return; }
+    const d = new Date(t.due_date);
+    d.setHours(0, 0, 0, 0);
+    if (d < hoje) { atrasadas.push(t); return; }
+    if (d <= seteDias) {
+      const chave = d.toISOString().slice(0, 10);
+      if (!porDia.has(chave)) porDia.set(chave, []);
+      porDia.get(chave).push(t);
+    }
+    // Prazos a mais de 7 dias não aparecem em "Minha semana".
+  });
+
+  const linhaTarefa = (t) => `
+    <div class="semana-tarefa" onclick="location.href='/board.html?projeto=${t.project_id}&tarefa=${t.id}'">
+      <span class="semana-tarefa-titulo">${t.title}</span>
+      <span class="semana-tarefa-meta">${t.projeto_nome} · ${rotuloPrioridade[t.priority] || t.priority}</span>
+    </div>`;
+
+  document.getElementById("semana-atrasadas").innerHTML = atrasadas.length ? `
+    <div class="report-card" style="margin-bottom:16px;border-color:var(--danger)">
+      <h3 style="color:var(--danger)">⏰ Atrasadas (${atrasadas.length})</h3>
+      ${atrasadas.map(linhaTarefa).join("")}
+    </div>` : "";
+
+  const diasOrdenados = [...porDia.keys()].sort();
+  document.getElementById("semana-dias").innerHTML = diasOrdenados.map((chave) => {
+    const d = new Date(chave + "T00:00:00");
+    const rotulo = d.getTime() === hoje.getTime()
+      ? "Hoje"
+      : d.toLocaleDateString("pt-PT", { weekday: "long", day: "2-digit", month: "short" });
+    return `
+      <div class="report-card" style="margin-bottom:16px">
+        <h3 style="text-transform:capitalize">📅 ${rotulo}</h3>
+        ${porDia.get(chave).map(linhaTarefa).join("")}
+      </div>`;
+  }).join("") || (atrasadas.length ? "" : `<div class="sub">Sem tarefas com prazo nos próximos 7 dias. 🎉</div>`);
+
+  document.getElementById("semana-sem-prazo").innerHTML = semPrazo.length ? `
+    <div class="report-card" style="opacity:.8">
+      <h3>📋 Sem prazo definido (${semPrazo.length})</h3>
+      ${semPrazo.map(linhaTarefa).join("")}
+    </div>` : "";
 }
 
 // ---------------- Membros ----------------

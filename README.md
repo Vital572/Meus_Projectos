@@ -259,6 +259,90 @@ da equipa**, aplique também o `db/migration_v14.sql` (adiciona `edited_at`,
 `deleted_at`/`deleted_by` a `channel_messages` e a tabela
 `channel_message_hidden`).
 
+Se já tinha isso mas ainda não tinha o **Gantt, subtarefas, dependências,
+campos personalizados, registo de tempo, metas, reações/respostas/menções no
+canal nem a autenticação de dois fatores**, aplique também o
+`db/migration_v15.sql` (ver a secção seguinte para o que cada coisa é).
+
+## Novidades inspiradas nas 5 ferramentas estudadas
+
+Depois de comparar o GPI Track com as 5 ferramentas do trabalho (Slack,
+Asana, ClickUp, Monday.com, Smartsheet), acrescentei a cada uma pelo menos
+uma funcionalidade de destaque, para o protótipo cobrir um pouco de cada
+abordagem:
+
+**Monday.com / Smartsheet**
+- **Gráfico de Gantt** — nova vista no quadro (`/board.html`) que desenha
+  cada tarefa como uma barra entre a data de início e o prazo, agrupada por
+  coluna; dá para perceber de relance onde as datas se sobrepõem.
+- **Campos personalizados por projeto** — o responsável do projeto define
+  colunas extra (texto, número, data ou lista de opções) que passam a
+  aparecer no detalhe de cada tarefa, tal como no Monday/Smartsheet.
+- **Agrupar e ordenar tarefas** no quadro por responsável, prioridade ou
+  etiqueta, além da vista por coluna.
+
+**Asana**
+- **"Minha semana"** — no Espaço de Gestão, um separador com as tarefas de
+  todos os projetos da pessoa que têm prazo nos próximos 7 dias.
+- **Subtarefas reais** — uma tarefa pode ter tarefas-filhas, cada uma com o
+  seu próprio responsável, prazo e estado, para além da checklist simples.
+- **Dependências entre tarefas** — marcar que uma tarefa só pode começar
+  depois de outra terminar; aparece como aviso no detalhe da tarefa e como
+  ligação no Gantt.
+
+**ClickUp**
+- **Registo de tempo** — cronómetro em cada tarefa (iniciar/parar), com o
+  total por tarefa, por pessoa e por projeto nos relatórios.
+- **Metas/objetivos do projeto** — criar uma meta com data-alvo e ligar
+  tarefas a ela; o progresso é calculado automaticamente a partir de quantas
+  dessas tarefas já estão concluídas.
+
+**Slack**
+- **Reações de emoji** nas mensagens da Conversa da equipa.
+- **Responder a uma mensagem específica** (um "thread" simples: a resposta
+  mostra um resumo da mensagem original por cima).
+- **Menções `@nome`** no canal, que notificam a pessoa mencionada.
+- **Pesquisar** no histórico de mensagens do canal.
+
+**Transversais às 5 ferramentas**
+- **Autenticação de dois fatores (2FA/TOTP)** — ativa-se no Espaço de
+  Gestão → Visão geral → Segurança: mostra um QR code para ler numa app como
+  Google Authenticator; a partir daí, o login passa a pedir sempre o código
+  de 6 dígitos além da password (ou da conta Google). Pode ser desativada a
+  qualquer momento com um código válido ou a password atual.
+- **Exportar o projeto para PDF ou Excel** — em `/board.html`, exporta o
+  quadro completo (tarefas, responsáveis, prazos, estado) no formato
+  escolhido, para imprimir ou enviar a alguém fora da plataforma.
+- **Aplicação instalável e com funcionamento parcial offline (PWA)** — o
+  navegador (Chrome, Edge, Safari no iPhone/Android) oferece "Instalar
+  aplicação" ou "Adicionar ao ecrã principal"; depois de instalada, abre
+  como uma app normal. As páginas já visitadas antes continuam a abrir sem
+  ligação à internet (não mostra o ecrã em branco do navegador), mas os
+  dados em si — quadro, mensagens, notificações — continuam a precisar de
+  ligação para atualizar.
+
+## Tutoriais animados, detalhe de tarefa responsivo e novo visual
+
+- **Tutoriais por funcionalidade** — em `/funcionalidades.html` cada uma das 22
+  funcionalidades é um cartão clicável que abre um tutorial animado, passo a
+  passo (demonstração desenhada em HTML/CSS, sem imagens), com avanço
+  automático, pontos de navegação, setas do teclado e botão "Experimentar
+  agora". Os filtros por ferramenta (Slack, Asana, ClickUp, Monday.com,
+  Smartsheet, Transversais) funcionam. Os tutoriais estão em
+  `public/js/tutoriais.js` (lista `TUTORIAIS`): para acrescentar um, basta
+  juntar um objeto com os seus passos.
+- **Detalhe da tarefa responsivo** — no computador abre em duas colunas (edição,
+  subtarefas, checklist e comentários à esquerda; tempo, responsáveis extra,
+  campos, dependências e anexos à direita); no tablet passa a uma coluna; no
+  telemóvel ocupa o ecrã inteiro, com cabeçalho fixo, botões grandes e campos
+  que não provocam zoom no iPhone.
+- **Visual com mais Bootstrap** — faixa de boas-vindas e indicadores em "Os meus
+  projetos", cartões de projeto com barra de progresso, membros e atrasos,
+  faixa-resumo no quadro (tarefas, concluídas, em atraso, membros, progresso),
+  estados vazios com ilustração e colunas com "Arraste tarefas para aqui".
+  Não há migração de base de dados nova nesta versão; só é preciso substituir os
+  ficheiros e reiniciar (`npm start`).
+
 ## Liberdade para sair de um projeto — correção importante
 
 Corrigi um bug real: a saída/remoção de um projeto ainda estava presa ao
@@ -576,7 +660,7 @@ simplesmente não aparece).
 4. Copie o **ID de cliente** para `GOOGLE_CLIENT_ID` no `.env` (o segredo vai em `GOOGLE_CLIENT_SECRET`).
 
 Quem entra com o Google pela primeira vez fica com conta criada automaticamente (o e-mail
-tem de estar verificado pelo Google). Se já existir uma conta com o mesmo e-mail, é associada.
+tem de estar verificado pelo Google). Se já existir uma conta com o mesmo e-mail, é associada ao Google e a password antiga é anulada (evita que alguém que se registou antes com o e-mail de outra pessoa fique com acesso à conta dela); a pessoa pode definir uma nova em "Esqueceu a password?". Contas com 2FA ativo continuam a pedir o código da app autenticadora também no login com o Google.
 A regra de "sessão única por conta" também se aplica.
 
 **B) Enviar e-mails pelo Gmail (recuperação de conta + notificações de projeto)**
@@ -610,8 +694,8 @@ notificação em tempo real não é afetada.
 
 ## Possíveis extensões futuras
 
-- Autenticação multifator
-- Vista de linha do tempo (Gantt) e calendário
-- Notificações por e-mail
-- Relatórios de produtividade por membro da equipa
-- Anexos de ficheiros nas tarefas
+- Sincronização de dados em segundo plano quando a app volta a ficar online
+  (o modo offline atual só mantém as páginas já visitadas acessíveis, não
+  sincroniza ações feitas sem ligação)
+- Vista de "Mapa Mental" para organizar tarefas (ClickUp)
+- Integração com calendários externos (Google Calendar/Outlook)

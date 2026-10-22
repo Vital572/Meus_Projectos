@@ -55,7 +55,7 @@ function emitirParaTarefa(io, task, evento, payload) {
 }
 
 router.post("/", async (req, res) => {
-  const { project_id, column_id, title, description, priority, assignee_id, due_date, visibility } = req.body;
+  const { project_id, column_id, title, description, priority, assignee_id, due_date, start_date, visibility, parent_task_id } = req.body;
   if (!project_id || !column_id || !title) {
     return res.status(400).json({ erro: "project_id, column_id e title são obrigatórios." });
   }
@@ -70,10 +70,10 @@ router.post("/", async (req, res) => {
     );
     const { rows } = await client.query(
       `INSERT INTO gpitrack.tasks
-         (project_id, column_id, title, description, priority, assignee_id, due_date, position, created_by, visibility)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-       RETURNING id, project_id, column_id, title, description, priority, assignee_id, due_date, position, created_at, updated_at, visibility`,
-      [project_id, column_id, title, description || null, priority || "media", assignee_id || null, due_date || null, posRows[0].pos, req.user.id, visibilidade]
+         (project_id, column_id, title, description, priority, assignee_id, due_date, start_date, position, created_by, visibility, parent_task_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+       RETURNING id, project_id, column_id, title, description, priority, assignee_id, due_date, start_date, position, created_at, updated_at, visibility, parent_task_id`,
+      [project_id, column_id, title, description || null, priority || "media", assignee_id || null, due_date || null, start_date || null, posRows[0].pos, req.user.id, visibilidade, parent_task_id || null]
     );
     const task = rows[0];
     await registarAtividade(client, project_id, req.user.id, "task.created", { taskId: task.id, title });
@@ -112,7 +112,7 @@ router.patch("/:id", async (req, res) => {
     return res.status(403).json({ erro: "Apenas quem criou a tarefa, o dono do projeto ou um administrador pode editá-la." });
   }
 
-  const campos = ["title", "description", "priority", "assignee_id", "due_date", "visibility"];
+  const campos = ["title", "description", "priority", "assignee_id", "due_date", "start_date", "visibility", "parent_task_id"];
   const updates = [];
   const valores = [];
   campos.forEach((campo) => {
@@ -128,7 +128,7 @@ router.patch("/:id", async (req, res) => {
     valores.push(id);
     const { rows } = await pool.query(
       `UPDATE gpitrack.tasks SET ${updates.join(", ")} WHERE id = $${valores.length}
-       RETURNING id, project_id, column_id, title, description, priority, assignee_id, due_date, position, updated_at, visibility`,
+       RETURNING id, project_id, column_id, title, description, priority, assignee_id, due_date, start_date, position, updated_at, visibility, parent_task_id`,
       valores
     );
     const task = rows[0];
@@ -261,10 +261,15 @@ router.delete("/:id", async (req, res) => {
   }
 
   try {
-    // Nomes dos ficheiros anexados (a BD apaga os registos em cascata; os
-    // ficheiros em si são apagados do armazenamento logo a seguir).
+    // Nomes dos ficheiros anexados à tarefa E às suas subtarefas (a BD apaga os
+    // registos em cascata; os ficheiros em si são apagados do armazenamento a seguir).
     const { rows: anexos } = await pool.query(
-      `SELECT stored_name FROM gpitrack.task_attachments WHERE task_id = $1`,
+      `WITH RECURSIVE arvore AS (
+         SELECT id FROM gpitrack.tasks WHERE id = $1
+         UNION ALL
+         SELECT t.id FROM gpitrack.tasks t JOIN arvore a ON t.parent_task_id = a.id
+       )
+       SELECT stored_name FROM gpitrack.task_attachments WHERE task_id IN (SELECT id FROM arvore)`,
       [id]
     );
     const { rows } = await pool.query(
@@ -631,6 +636,247 @@ router.delete("/:id/responsaveis/:userId", async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ erro: "Erro ao remover responsável." });
+  }
+});
+
+// ---------------- Campos personalizados (valores por tarefa) ----------------
+
+// GET /api/tasks/:id/campos — valores dos campos personalizados desta tarefa
+router.get("/:id/campos", async (req, res) => {
+  try {
+    const tarefa = await obterTarefa(req.params.id);
+    if (!tarefa) return res.status(404).json({ erro: "Tarefa não encontrada." });
+    if (!(await podeVerTarefa(req.user, tarefa))) return res.status(403).json({ erro: "Sem acesso a esta tarefa." });
+
+    const { rows } = await pool.query(
+      `SELECT f.id AS field_id, f.name, f.type, f.options, v.value
+       FROM gpitrack.project_custom_fields f
+       LEFT JOIN gpitrack.task_custom_values v ON v.field_id = f.id AND v.task_id = $1
+       WHERE f.project_id = $2 ORDER BY f.position`,
+      [req.params.id, tarefa.project_id]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: "Erro ao obter campos personalizados." });
+  }
+});
+
+// PUT /api/tasks/:id/campos/:fieldId — define/atualiza o valor de um campo personalizado nesta tarefa
+router.put("/:id/campos/:fieldId", async (req, res) => {
+  const { value } = req.body;
+  try {
+    const tarefa = await obterTarefa(req.params.id);
+    if (!tarefa) return res.status(404).json({ erro: "Tarefa não encontrada." });
+    if (!(await podeInteragirComTarefa(req.user, tarefa))) {
+      return res.status(403).json({ erro: "Só quem é responsável por esta tarefa pode editar os seus campos." });
+    }
+    await pool.query(
+      `INSERT INTO gpitrack.task_custom_values (task_id, field_id, value) VALUES ($1, $2, $3)
+       ON CONFLICT (task_id, field_id) DO UPDATE SET value = EXCLUDED.value`,
+      [req.params.id, req.params.fieldId, value ?? null]
+    );
+    const io = req.app.get("io");
+    io.to(`project:${tarefa.project_id}`).emit("task:campo-atualizado", { taskId: req.params.id, fieldId: req.params.fieldId, value: value ?? null });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: "Erro ao guardar o valor do campo." });
+  }
+});
+
+// ---------------- Subtarefas (Asana) ----------------
+
+// GET /api/tasks/:id/subtarefas
+router.get("/:id/subtarefas", async (req, res) => {
+  try {
+    const tarefa = await obterTarefa(req.params.id);
+    if (!tarefa) return res.status(404).json({ erro: "Tarefa não encontrada." });
+    if (!(await podeVerTarefa(req.user, tarefa))) return res.status(403).json({ erro: "Sem acesso a esta tarefa." });
+
+    const { rows } = await pool.query(
+      `SELECT t.id, t.title, t.priority, t.due_date, c.is_done,
+              u.id AS assignee_id, u.name AS assignee_name, u.avatar_color AS assignee_color
+       FROM gpitrack.tasks t
+       LEFT JOIN gpitrack.board_columns c ON c.id = t.column_id
+       LEFT JOIN gpitrack.users u ON u.id = t.assignee_id
+       WHERE t.parent_task_id = $1 ORDER BY t.position`,
+      [req.params.id]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: "Erro ao obter subtarefas." });
+  }
+});
+
+// POST /api/tasks/:id/subtarefas — cria uma subtarefa (na mesma coluna da tarefa-mãe)
+router.post("/:id/subtarefas", async (req, res) => {
+  const { title } = req.body;
+  if (!title || !title.trim()) return res.status(400).json({ erro: "O título é obrigatório." });
+  try {
+    const tarefa = await obterTarefa(req.params.id);
+    if (!tarefa) return res.status(404).json({ erro: "Tarefa não encontrada." });
+    if (!(await podeInteragirComTarefa(req.user, tarefa))) {
+      return res.status(403).json({ erro: "Só quem é responsável por esta tarefa pode adicionar subtarefas." });
+    }
+    const { rows: posRows } = await pool.query(
+      `SELECT COALESCE(MAX(position), -1) + 1 AS pos FROM gpitrack.tasks WHERE column_id = $1`,
+      [tarefa.column_id]
+    );
+    const { rows } = await pool.query(
+      `INSERT INTO gpitrack.tasks (project_id, column_id, title, position, created_by, parent_task_id)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING id, title, priority, due_date`,
+      [tarefa.project_id, tarefa.column_id, title.trim(), posRows[0].pos, req.user.id, tarefa.id]
+    );
+    const io = req.app.get("io");
+    io.to(`project:${tarefa.project_id}`).emit("task:subtarefa-criada", { parentId: tarefa.id, subtarefa: rows[0] });
+    res.status(201).json(rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: "Erro ao criar subtarefa." });
+  }
+});
+
+// ---------------- Dependências entre tarefas (Asana) ----------------
+
+// GET /api/tasks/:id/dependencias — tarefas das quais esta depende, com o estado "concluída" de cada uma
+router.get("/:id/dependencias", async (req, res) => {
+  try {
+    const tarefa = await obterTarefa(req.params.id);
+    if (!tarefa) return res.status(404).json({ erro: "Tarefa não encontrada." });
+    if (!(await podeVerTarefa(req.user, tarefa))) return res.status(403).json({ erro: "Sem acesso a esta tarefa." });
+
+    const { rows } = await pool.query(
+      `SELECT t.id, t.title, COALESCE(c.is_done, false) AS concluida
+       FROM gpitrack.task_dependencies d
+       JOIN gpitrack.tasks t ON t.id = d.depends_on_task_id
+       LEFT JOIN gpitrack.board_columns c ON c.id = t.column_id
+       WHERE d.task_id = $1 ORDER BY t.title`,
+      [req.params.id]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: "Erro ao obter dependências." });
+  }
+});
+
+// POST /api/tasks/:id/dependencias — adiciona "esta tarefa depende de depends_on_task_id"
+router.post("/:id/dependencias", async (req, res) => {
+  const { depends_on_task_id } = req.body;
+  if (!depends_on_task_id) return res.status(400).json({ erro: "depends_on_task_id é obrigatório." });
+  if (depends_on_task_id === req.params.id) return res.status(400).json({ erro: "Uma tarefa não pode depender de si própria." });
+  try {
+    const tarefa = await obterTarefa(req.params.id);
+    if (!tarefa) return res.status(404).json({ erro: "Tarefa não encontrada." });
+    if (!(await podeInteragirComTarefa(req.user, tarefa))) {
+      return res.status(403).json({ erro: "Só quem é responsável por esta tarefa pode definir dependências." });
+    }
+    await pool.query(
+      `INSERT INTO gpitrack.task_dependencies (task_id, depends_on_task_id, created_by)
+       VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+      [req.params.id, depends_on_task_id, req.user.id]
+    );
+    const io = req.app.get("io");
+    io.to(`project:${tarefa.project_id}`).emit("task:dependencia-criada", { taskId: req.params.id, dependsOnTaskId: depends_on_task_id });
+    res.status(201).json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: "Erro ao adicionar dependência." });
+  }
+});
+
+// DELETE /api/tasks/:id/dependencias/:dependsOnId
+router.delete("/:id/dependencias/:dependsOnId", async (req, res) => {
+  try {
+    const tarefa = await obterTarefa(req.params.id);
+    if (!tarefa) return res.status(404).json({ erro: "Tarefa não encontrada." });
+    if (!(await podeInteragirComTarefa(req.user, tarefa))) {
+      return res.status(403).json({ erro: "Só quem é responsável por esta tarefa pode remover dependências." });
+    }
+    await pool.query(
+      `DELETE FROM gpitrack.task_dependencies WHERE task_id = $1 AND depends_on_task_id = $2`,
+      [req.params.id, req.params.dependsOnId]
+    );
+    const io = req.app.get("io");
+    io.to(`project:${tarefa.project_id}`).emit("task:dependencia-removida", { taskId: req.params.id, dependsOnTaskId: req.params.dependsOnId });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: "Erro ao remover dependência." });
+  }
+});
+
+// ---------------- Registo de tempo / cronómetro (ClickUp) ----------------
+
+// GET /api/tasks/:id/tempo — histórico de registos + total em segundos
+router.get("/:id/tempo", async (req, res) => {
+  try {
+    const tarefa = await obterTarefa(req.params.id);
+    if (!tarefa) return res.status(404).json({ erro: "Tarefa não encontrada." });
+    if (!(await podeVerTarefa(req.user, tarefa))) return res.status(403).json({ erro: "Sem acesso a esta tarefa." });
+
+    const { rows } = await pool.query(
+      `SELECT te.id, te.user_id, u.name AS user_name, te.started_at, te.ended_at, te.seconds
+       FROM gpitrack.time_entries te
+       JOIN gpitrack.users u ON u.id = te.user_id
+       WHERE te.task_id = $1 ORDER BY te.started_at DESC`,
+      [req.params.id]
+    );
+    const total = rows.reduce((soma, r) => soma + (r.seconds || (r.ended_at ? 0 : Math.floor((Date.now() - new Date(r.started_at)) / 1000))), 0);
+    res.json({ entradas: rows, total_segundos: total, a_correr: rows.find((r) => !r.ended_at && r.user_id === req.user.id) || null });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: "Erro ao obter o registo de tempo." });
+  }
+});
+
+// POST /api/tasks/:id/tempo/iniciar — começa a contar tempo nesta tarefa (um cronómetro por pessoa de cada vez)
+router.post("/:id/tempo/iniciar", async (req, res) => {
+  try {
+    const tarefa = await obterTarefa(req.params.id);
+    if (!tarefa) return res.status(404).json({ erro: "Tarefa não encontrada." });
+    if (!(await podeInteragirComTarefa(req.user, tarefa))) {
+      return res.status(403).json({ erro: "Só quem é responsável por esta tarefa pode registar tempo nela." });
+    }
+    const { rows } = await pool.query(
+      `INSERT INTO gpitrack.time_entries (task_id, user_id, started_at) VALUES ($1, $2, now())
+       RETURNING id, started_at`,
+      [req.params.id, req.user.id]
+    );
+    res.status(201).json(rows[0]);
+  } catch (err) {
+    if (err.code === "23505") return res.status(409).json({ erro: "Já tem um cronómetro a correr noutra tarefa. Pare-o primeiro." });
+    console.error(err);
+    res.status(500).json({ erro: "Erro ao iniciar o cronómetro." });
+  }
+});
+
+// POST /api/tasks/tempo/:entryId/parar — termina um registo de tempo em curso
+router.post("/tempo/:entryId/parar", async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, task_id, user_id, started_at FROM gpitrack.time_entries WHERE id = $1 AND ended_at IS NULL`,
+      [req.params.entryId]
+    );
+    const entrada = rows[0];
+    if (!entrada) return res.status(404).json({ erro: "Registo de tempo não encontrado ou já terminado." });
+    if (entrada.user_id !== req.user.id) return res.status(403).json({ erro: "Só pode parar o seu próprio cronómetro." });
+
+    const { rows: atualizado } = await pool.query(
+      `UPDATE gpitrack.time_entries SET ended_at = now(), seconds = EXTRACT(EPOCH FROM (now() - started_at))::int
+       WHERE id = $1 RETURNING id, task_id, seconds, ended_at`,
+      [req.params.entryId]
+    );
+    const tarefa = await obterTarefa(entrada.task_id);
+    const io = req.app.get("io");
+    if (tarefa) io.to(`project:${tarefa.project_id}`).emit("task:tempo-registado", { taskId: entrada.task_id, userId: req.user.id, seconds: atualizado[0].seconds });
+    res.json(atualizado[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: "Erro ao parar o cronómetro." });
   }
 });
 

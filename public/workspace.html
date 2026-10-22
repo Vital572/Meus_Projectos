@@ -6,7 +6,10 @@
 <title>Espaço de Gestão — GPI Track</title>
 <link rel="icon" href="/img/unikivi-logo.png" />
 <script>(function(){var t=localStorage.getItem("gpitrack_tema")||"escuro";document.documentElement.setAttribute("data-theme",t);document.documentElement.setAttribute("data-bs-theme",t==="claro"?"light":"dark");})();</script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" />
 <link rel="stylesheet" href="/css/styles.css" />
+<link rel="manifest" href="/manifest.json" />
+<meta name="theme-color" content="#0B1220" />
 <style>
   .chart-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 18px; margin: 24px 0; }
   .chart-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px 20px; box-shadow: var(--shadow); }
@@ -31,6 +34,7 @@
       <div class="admin-nav-item" data-tab="equipas">👥 Equipas</div>
       <div class="admin-nav-item" data-tab="projetos">🗂️ Projetos</div>
       <div class="admin-nav-item" data-tab="tarefas">✅ Minhas tarefas</div>
+      <div class="admin-nav-item" data-tab="semana">📆 Minha semana</div>
       <div class="admin-nav-item" data-tab="membros">🙋 Membros</div>
       <div class="admin-nav-item" data-tab="atividades">🕓 Atividades recentes</div>
       <div class="admin-nav-item" data-tab="relatorios">📄 Relatórios</div>
@@ -73,7 +77,61 @@
           </span>
           <input type="checkbox" id="pref-email-notificacoes" />
         </label>
+
+        <div class="nav-section-label" style="margin-top:18px">Segurança</div>
+        <div id="bloco-mfa-desativado" class="card-preferencia" style="display:none">
+          <span>
+            <b>🔒 Autenticação de dois fatores (2FA)</b>
+            <small>Peça um código de 6 dígitos (de uma app como Google Authenticator) a cada entrada, além da password.</small>
+          </span>
+          <button type="button" class="btn" style="width:auto" onclick="iniciarConfigMFA()">Ativar</button>
+        </div>
+        <div id="bloco-mfa-ativado" class="card-preferencia" style="display:none">
+          <span>
+            <b>🔒 Autenticação de dois fatores (2FA)</b>
+            <small>Está ativa nesta conta.</small>
+          </span>
+          <button type="button" class="btn" style="width:auto;color:var(--danger);border-color:var(--danger)" onclick="abrirModalDesativarMFA()">Desativar</button>
+        </div>
       </section>
+
+      <!-- Modal: configurar 2FA (passo 1 — mostrar segredo/QR e pedir o primeiro código) -->
+      <div class="overlay" id="overlay-config-mfa">
+        <div class="gpi-modal" style="position:relative;max-width:420px">
+          <span class="modal-close" onclick="fecharModalConfigMFA()">&times;</span>
+          <h3>Ativar autenticação de dois fatores</h3>
+          <p class="sub" style="margin:10px 0 14px">
+            Digitalize este código numa app como Google Authenticator, Authy ou
+            1Password, ou introduza a chave manualmente.
+          </p>
+          <div id="mfa-qrcode" style="display:flex;justify-content:center;margin-bottom:12px"></div>
+          <div class="field">
+            <label>Chave manual</label>
+            <input type="text" id="mfa-chave-manual" readonly style="font-family:monospace;font-size:12.5px" />
+          </div>
+          <div class="field">
+            <label>Código de 6 dígitos da app</label>
+            <input type="text" id="mfa-codigo-ativar" inputmode="numeric" maxlength="6" placeholder="000000" />
+          </div>
+          <div class="error-box" id="erro-mfa-ativar"></div>
+          <button type="button" class="btn btn-primary" style="width:100%" onclick="confirmarAtivarMFA()">Confirmar e ativar</button>
+        </div>
+      </div>
+
+      <!-- Modal: desativar 2FA -->
+      <div class="overlay" id="overlay-desativar-mfa">
+        <div class="gpi-modal" style="position:relative;max-width:380px">
+          <span class="modal-close" onclick="fecharModalDesativarMFA()">&times;</span>
+          <h3>Desativar autenticação de dois fatores</h3>
+          <p class="sub" style="margin:10px 0 14px">Confirme com um código atual da app, ou com a sua password.</p>
+          <div class="field">
+            <label>Código de 6 dígitos (ou password, se a conta for só Google)</label>
+            <input type="text" id="mfa-codigo-desativar" placeholder="000000 ou a sua password" />
+          </div>
+          <div class="error-box" id="erro-mfa-desativar"></div>
+          <button type="button" class="btn btn-primary" style="width:100%" onclick="confirmarDesativarMFA()">Desativar</button>
+        </div>
+      </div>
 
       <!-- Equipas -->
       <section id="tab-equipas" class="admin-tab" style="display:none">
@@ -106,6 +164,14 @@
           <thead><tr><th>Tarefa</th><th>Projeto</th><th>Coluna</th><th>Prioridade</th><th>Prazo</th></tr></thead>
           <tbody id="tbody-minhas-tarefas"></tbody>
         </table>
+      </section>
+
+      <!-- Minha semana -->
+      <section id="tab-semana" class="admin-tab" style="display:none">
+        <div class="sub" style="margin-bottom:16px">As suas tarefas de todos os projetos, agrupadas por prazo — tal como a vista "Minha semana" do Asana.</div>
+        <div id="semana-atrasadas"></div>
+        <div id="semana-dias"></div>
+        <div id="semana-sem-prazo"></div>
       </section>
 
       <!-- Membros -->

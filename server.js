@@ -59,6 +59,7 @@ const limitadorAutenticacao = rateLimit({
 app.use("/api/auth/login", limitadorAutenticacao);
 app.use("/api/auth/registar", limitadorAutenticacao);
 app.use("/api/auth/google", limitadorAutenticacao);
+app.use("/api/auth/mfa/verificar-login", limitadorAutenticacao); // o código de 6 dígitos não pode ser adivinhado por tentativa e erro
 
 // Recuperação de conta: limite mais apertado (cada pedido pode gerar um e-mail).
 const limitadorRecuperacao = rateLimit({

@@ -215,9 +215,45 @@ function gerarRelatorioUtilizadores(doc, dados, autor) {
   rodape(doc, autor);
 }
 
+// ---------------- Exportação do quadro de um projeto ----------------
+// Usado por "Exportar PDF" no quadro (qualquer membro do projeto, não só
+// administração) — uma fotografia do estado atual do quadro, coluna a coluna.
+function gerarExportacaoQuadro(doc, { projeto, colunas, tarefas }, autor) {
+  cabecalho(doc, projeto.name, "Exportação do quadro");
+  if (projeto.description) paragrafo(doc, projeto.description, { size: 9, color: GREY, moveDown: 0.6 });
+
+  caixaResumo(doc, [
+    { valor: tarefas.length, rotulo: "TOTAL DE TAREFAS" },
+    { valor: colunas.length, rotulo: "COLUNAS" },
+    { valor: tarefas.filter((t) => t.concluida).length, rotulo: "CONCLUÍDAS" },
+  ]);
+
+  colunas.forEach((col) => {
+    const tarefasCol = tarefas.filter((t) => t.column_id === col.id);
+    tituloSeccao(doc, `${col.name} (${tarefasCol.length})`);
+    if (tarefasCol.length === 0) {
+      paragrafo(doc, "Sem tarefas nesta coluna.", { size: 9, color: GREY, moveDown: 0.8 });
+      return;
+    }
+    tabela(doc, {
+      larguras: [150, 55, 90, 70, 90],
+      cabecalhos: ["Tarefa", "Prioridade", "Responsável", "Prazo", "Etiquetas"],
+      linhas: tarefasCol.map((t) => [
+        t.title, t.priority,
+        t.assignee_name || "—",
+        t.due_date ? new Date(t.due_date).toLocaleDateString("pt-PT") : "—",
+        nomeColuna(t.labels),
+      ]),
+    });
+  });
+
+  rodape(doc, autor);
+}
+
 module.exports = {
   novoDocumento,
   gerarRelatorioGeral,
   gerarRelatorioProjetos,
   gerarRelatorioUtilizadores,
+  gerarExportacaoQuadro,
 };

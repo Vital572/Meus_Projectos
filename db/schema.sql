@@ -23,7 +23,9 @@ CREATE TABLE IF NOT EXISTS users (
     role          VARCHAR(20)  NOT NULL DEFAULT 'member', -- 'admin' | 'member'
     is_active     BOOLEAN      NOT NULL DEFAULT true,
     last_seen_at  TIMESTAMPTZ,
-    created_at    TIMESTAMPTZ  NOT NULL DEFAULT now()
+    created_at    TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    mfa_secret    VARCHAR(64),             -- segredo TOTP (Base32), só existe depois de ativar
+    mfa_enabled   BOOLEAN      NOT NULL DEFAULT false
 );
 
 -- ------------------------------------------------------------
@@ -90,17 +92,82 @@ CREATE TABLE IF NOT EXISTS tasks (
     priority     VARCHAR(10) NOT NULL DEFAULT 'media', -- 'baixa' | 'media' | 'alta'
     assignee_id  UUID REFERENCES users(id) ON DELETE SET NULL,
     due_date     DATE,
+    start_date   DATE, -- data de início, usada na vista de Gantt
     position     INTEGER NOT NULL DEFAULT 0,
     created_by   UUID REFERENCES users(id) ON DELETE SET NULL,
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     reminded_day_before BOOLEAN NOT NULL DEFAULT false, -- já foi notificado "falta 1 dia"
     reminded_due_day    BOOLEAN NOT NULL DEFAULT false, -- já foi notificado "é hoje"
-    visibility   VARCHAR(20) NOT NULL DEFAULT 'equipa' -- 'equipa' (todos veem) | 'restrita' (só responsáveis + responsáveis da tarefa)
+    visibility   VARCHAR(20) NOT NULL DEFAULT 'equipa', -- 'equipa' (todos veem) | 'restrita' (só responsáveis + responsáveis da tarefa)
+    parent_task_id UUID REFERENCES tasks(id) ON DELETE CASCADE -- subtarefa de outra tarefa (Asana)
 );
 
 CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_column ON tasks(column_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_task_id);
+
+-- Dependências entre tarefas (Asana): "task_id" só deveria começar depois de
+-- "depends_on_task_id" terminar — a interface avisa, não bloqueia por si só.
+CREATE TABLE IF NOT EXISTS task_dependencies (
+    task_id            UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    depends_on_task_id UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    created_by         UUID REFERENCES users(id) ON DELETE SET NULL,
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (task_id, depends_on_task_id),
+    CHECK (task_id <> depends_on_task_id)
+);
+
+-- Campos personalizados por projeto (Monday.com / Smartsheet)
+CREATE TABLE IF NOT EXISTS project_custom_fields (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    project_id  UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    name        VARCHAR(80) NOT NULL,
+    type        VARCHAR(20) NOT NULL DEFAULT 'texto', -- 'texto' | 'numero' | 'data' | 'lista'
+    options     JSONB, -- lista de opções, só para type = 'lista'
+    position    INTEGER NOT NULL DEFAULT 0,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_custom_fields_project ON project_custom_fields(project_id);
+
+CREATE TABLE IF NOT EXISTS task_custom_values (
+    task_id   UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    field_id  UUID NOT NULL REFERENCES project_custom_fields(id) ON DELETE CASCADE,
+    value     TEXT,
+    PRIMARY KEY (task_id, field_id)
+);
+
+-- Registo de tempo / cronómetro por tarefa (ClickUp)
+CREATE TABLE IF NOT EXISTS time_entries (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    task_id     UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    started_at  TIMESTAMPTZ NOT NULL,
+    ended_at    TIMESTAMPTZ, -- NULL = cronómetro ainda a correr
+    seconds     INTEGER,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_time_entries_task ON time_entries(task_id);
+CREATE INDEX IF NOT EXISTS idx_time_entries_user ON time_entries(user_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_time_entries_running ON time_entries(user_id) WHERE ended_at IS NULL;
+
+-- Metas/objetivos do projeto (ClickUp) — progresso = % de tarefas ligadas concluídas
+CREATE TABLE IF NOT EXISTS project_goals (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    project_id   UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    name         VARCHAR(200) NOT NULL,
+    description  TEXT,
+    target_date  DATE,
+    created_by   UUID REFERENCES users(id) ON DELETE SET NULL,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_project_goals_project ON project_goals(project_id);
+
+CREATE TABLE IF NOT EXISTS goal_tasks (
+    goal_id  UUID NOT NULL REFERENCES project_goals(id) ON DELETE CASCADE,
+    task_id  UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    PRIMARY KEY (goal_id, task_id)
+);
 
 -- ------------------------------------------------------------
 -- Comentários (em tempo real, por tarefa)
@@ -227,7 +294,8 @@ CREATE TABLE IF NOT EXISTS channel_messages (
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     edited_at   TIMESTAMPTZ, -- marca "(editada)" quando o texto foi alterado
     deleted_at  TIMESTAMPTZ, -- eliminada "para todos" — conteúdo escondido de todos
-    deleted_by  UUID REFERENCES users(id) ON DELETE SET NULL
+    deleted_by  UUID REFERENCES users(id) ON DELETE SET NULL,
+    reply_to_id UUID REFERENCES channel_messages(id) ON DELETE SET NULL -- responder a uma mensagem específica
 );
 
 CREATE INDEX IF NOT EXISTS idx_channel_messages_project ON channel_messages(project_id, created_at);
@@ -239,6 +307,15 @@ CREATE TABLE IF NOT EXISTS channel_message_hidden (
     user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     hidden_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (message_id, user_id)
+);
+
+-- Reações emoji nas mensagens do canal (Slack)
+CREATE TABLE IF NOT EXISTS channel_message_reactions (
+    message_id  UUID NOT NULL REFERENCES channel_messages(id) ON DELETE CASCADE,
+    user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    emoji       VARCHAR(16) NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (message_id, user_id, emoji)
 );
 
 -- ------------------------------------------------------------

@@ -14,6 +14,9 @@ let filtroResponsavel = "";
 let filtroEtiqueta = "";
 let projetosDoUtilizador = [];
 let timeoutDigitandoCanal = null;
+let mensagensCanalCache = [];
+let camposPersonalizadosProjeto = [];
+let intervaloCronometro = null;
 
 const cores = ["#22C7DD", "#F0B429", "#8E44AD", "#34C77B", "#EF6461"];
 function corPara(id) {
@@ -78,6 +81,7 @@ async function iniciar() {
   }
 
   if (eu.role === "admin" || souDonoDoProjeto()) document.getElementById("bloco-espaco-gestao").style.display = "block";
+  if (souDonoDoProjeto()) document.getElementById("bloco-campos-personalizados").style.display = "block";
 
   try {
     await carregarEtiquetas();
@@ -191,6 +195,26 @@ document.addEventListener("click", (e) => {
   if (container && !container.contains(e.target)) alternarSeletorProjetos(false);
 });
 
+// ---------------- Exportar o quadro (PDF / Excel) ----------------
+function alternarMenuExportar(forcar) {
+  const lista = document.getElementById("exportar-lista");
+  const abrir = forcar !== undefined ? forcar : lista.style.display === "none";
+  lista.style.display = abrir ? "block" : "none";
+}
+document.addEventListener("click", (e) => {
+  const container = document.getElementById("exportar-switcher");
+  if (container && !container.contains(e.target)) alternarMenuExportar(false);
+});
+
+// O ficheiro tem de levar o token de sessão (um link direto do navegador não
+// envia o cabeçalho Authorization), por isso abre-se como um link com
+// ?token=… em vez de um pedido feito pelo api.js.
+function exportarQuadro(formato) {
+  alternarMenuExportar(false);
+  const url = `/api/projects/${projectId}/exportar/${formato === "excel" ? "excel" : "pdf"}?token=${encodeURIComponent(sessao.obterToken())}`;
+  window.open(url, "_blank");
+}
+
 // Sair deste projeto (não é logout — só deixa de ser membro deste projeto em
 // concreto). Se for o único responsável, o servidor recusa e pede para
 // tornar outra pessoa responsável primeiro (ver "Responsável" acima).
@@ -231,15 +255,39 @@ function renderizarSeletorEtiquetasFiltro() {
 }
 
 function passaNosFiltros(t) {
+  // Subtarefas (Asana) não aparecem como cartões próprios no quadro — só
+  // dentro do detalhe da tarefa-mãe, para não duplicar e poluir as colunas.
+  if (t.parent_task_id) return false;
   if (filtroTexto && !t.title.toLowerCase().includes(filtroTexto.toLowerCase())) return false;
   if (filtroResponsavel && t.assignee_id !== filtroResponsavel) return false;
   if (filtroEtiqueta && !(t.labels || []).some((l) => l.id === filtroEtiqueta)) return false;
   return true;
 }
 
+function atualizarResumoQuadro() {
+  const el = document.getElementById("rq-total");
+  if (!el) return;
+  const idsConcluidas = new Set(estado.colunas.filter((c) => c.is_done).map((c) => c.id));
+  const principais = estado.tarefas.filter((t) => !t.parent_task_id);
+  const feitas = principais.filter((t) => idsConcluidas.has(t.column_id)).length;
+  const hoje = new Date(); hoje.setHours(0, 0, 0, 0);
+  const atrasadas = principais.filter((t) => t.due_date && !idsConcluidas.has(t.column_id) && new Date(String(t.due_date).substring(0, 10) + "T00:00:00") < hoje).length;
+  const pct = principais.length ? Math.round((feitas / principais.length) * 100) : 0;
+  el.textContent = principais.length;
+  document.getElementById("rq-feitas").textContent = feitas;
+  document.getElementById("rq-atraso").textContent = atrasadas;
+  document.getElementById("rq-membros").textContent = (estado.membros || []).length;
+  document.getElementById("rq-pct").textContent = pct + "%";
+  document.getElementById("rq-barra").style.width = pct + "%";
+}
+
 function renderizarQuadro() {
+  atualizarResumoQuadro();
   const container = document.getElementById("board-columns");
   container.innerHTML = "";
+
+  const modo = document.getElementById("agrupar-por")?.value || "coluna";
+  if (modo !== "coluna") return renderizarQuadroAgrupado(modo, container);
 
   estado.colunas.forEach((col) => {
     const tarefasCol = estado.tarefas
@@ -302,6 +350,50 @@ function renderizarQuadro() {
   }
 }
 
+// Agrupar o quadro por responsável/prioridade/etiqueta em vez de coluna
+// (Monday.com/Smartsheet) — vista só de leitura quanto ao arrastar, porque
+// o agrupamento aqui não corresponde a uma coluna real do quadro.
+function renderizarQuadroAgrupado(modo, container) {
+  const PRIORIDADES = { alta: "Alta prioridade", media: "Média prioridade", baixa: "Baixa prioridade" };
+  const grupos = new Map();
+  const tarefasVisiveis = estado.tarefas.filter(passaNosFiltros);
+
+  const adicionarA = (chave, rotulo, tarefa) => {
+    if (!grupos.has(chave)) grupos.set(chave, { rotulo, tarefas: [] });
+    grupos.get(chave).tarefas.push(tarefa);
+  };
+
+  tarefasVisiveis.forEach((t) => {
+    if (modo === "responsavel") {
+      adicionarA(t.assignee_id || "—", t.assignee_name || "Sem responsável", t);
+    } else if (modo === "prioridade") {
+      adicionarA(t.priority, PRIORIDADES[t.priority] || t.priority, t);
+    } else if (modo === "etiqueta") {
+      if (!t.labels || t.labels.length === 0) adicionarA("—", "Sem etiqueta", t);
+      else t.labels.forEach((l) => adicionarA(l.id, l.name, t));
+    }
+  });
+
+  [...grupos.entries()].sort((a, b) => a[1].rotulo.localeCompare(b[1].rotulo)).forEach(([, grupo]) => {
+    const colEl = document.createElement("div");
+    colEl.className = "column";
+    colEl.innerHTML = `
+      <div class="column-head">
+        <h4>${grupo.rotulo}</h4>
+        <span class="column-count">${grupo.tarefas.length}</span>
+      </div>
+      <div class="cards-zone"></div>
+    `;
+    container.appendChild(colEl);
+    const zona = colEl.querySelector(".cards-zone");
+    grupo.tarefas.sort((a, b) => a.position - b.position).forEach((t) => zona.appendChild(criarCartao(t, t.column_id)));
+  });
+
+  if (grupos.size === 0) {
+    container.innerHTML = `<p class="sub">Sem tarefas para mostrar.</p>`;
+  }
+}
+
 function estaAtrasada(t, colunaId) {
   const coluna = estado.colunas.find((c) => c.id === colunaId);
   if (!t.due_date || coluna?.is_done) return false;
@@ -317,6 +409,7 @@ function criarCartao(t, colunaId) {
   el.dataset.taskId = t.id;
   const atrasada = estaAtrasada(t, colunaId);
   const progresso = t.checklist_total > 0 ? `<span style="font-size:11px;color:var(--ink-faint)">☑ ${t.checklist_feitos}/${t.checklist_total}</span>` : "";
+  const subtarefas = t.subtarefas_total > 0 ? `<span style="font-size:11px;color:var(--ink-faint)" title="Subtarefas">↳ ${t.subtarefas_total}</span>` : "";
   const chips = (t.labels || []).map((l) => `<span style="background:${l.color}22;color:${l.color};border:1px solid ${l.color}55;font-size:10px;font-weight:700;padding:2px 7px;border-radius:6px">${l.name}</span>`).join(" ");
 
   el.innerHTML = `
@@ -326,6 +419,7 @@ function criarCartao(t, colunaId) {
     <div class="foot">
       <span class="due" style="${atrasada ? "color:var(--danger);font-weight:700" : ""}">${t.due_date ? (atrasada ? "⚠ " : "") + formatarData(t.due_date) : ""}</span>
       <div style="display:flex;align-items:center;gap:6px">
+        ${subtarefas}
         ${progresso}
         ${t.assignee_name ? `<div class="avatar" style="width:22px;height:22px;font-size:10px;background:${corPara(t.assignee_id)}">${iniciais(t.assignee_name)}</div>` : ""}
       </div>
@@ -559,17 +653,25 @@ function conectarSocket() {
   });
 
   socket.on("channel:message", (m) => {
-    const feed = document.getElementById("channel-feed");
-    feed.insertAdjacentHTML("beforeend", criarBolhaCanal(m));
-    feed.scrollTop = feed.scrollHeight;
+    mensagensCanalCache.push(m);
+    // Uma mensagem nova só aparece de imediato se não houver pesquisa ativa
+    // a escondê-la — caso contrário ficaria visível mesmo sem bater com o
+    // termo procurado.
+    if (!document.getElementById("channel-pesquisa")?.value.trim()) {
+      const feed = document.getElementById("channel-feed");
+      feed.insertAdjacentHTML("beforeend", criarBolhaCanal(m));
+      feed.scrollTop = feed.scrollHeight;
+    }
   });
 
   socket.on("channel:message-edited", ({ id, content }) => {
+    const cache = mensagensCanalCache.find((m) => m.id === id);
+    if (cache) { cache.content = content; cache.edited_at = new Date().toISOString(); }
     const el = document.querySelector(`.channel-msg[data-msg-id="${id}"]`);
     if (!el) return;
     el.dataset.content = content;
     const bubble = el.querySelector(".bubble");
-    if (bubble) bubble.innerHTML = escaparHtml(content);
+    if (bubble) bubble.innerHTML = realcarMencoes(content);
     let tag = el.querySelector(".channel-edited-tag");
     const meta = el.querySelector(".meta");
     if (meta && !tag) {
@@ -582,6 +684,8 @@ function conectarSocket() {
 
   socket.on("channel:message-deleted", ({ id, escopo }) => {
     if (escopo !== "todos") return; // "para mim" só afeta quem pediu, via resposta direta do pedido
+    const cache = mensagensCanalCache.find((m) => m.id === id);
+    if (cache) cache.deleted_at = new Date().toISOString();
     const el = document.querySelector(`.channel-msg[data-msg-id="${id}"]`);
     if (!el) return;
     el.classList.add("eliminada");
@@ -596,6 +700,13 @@ function conectarSocket() {
     ind.innerHTML = `<span class="typing-dots"><span></span><span></span><span></span></span>${user} está a escrever…`;
     clearTimeout(timeoutDigitandoCanal);
     timeoutDigitandoCanal = setTimeout(() => (ind.innerHTML = ""), 2200);
+  });
+
+  socket.on("channel:reaction", ({ messageId, reacoes }) => {
+    const cache = mensagensCanalCache.find((m) => m.id === messageId);
+    if (cache) cache.reacoes = reacoes;
+    const box = document.getElementById(`reacoes-${messageId}`);
+    if (box) box.innerHTML = construirChipsReacao(reacoes, messageId);
   });
 
   socket.on("column:created", (coluna) => {
@@ -647,6 +758,46 @@ function ligarFiltros() {
   document.getElementById("campo-pesquisa").addEventListener("input", (e) => { filtroTexto = e.target.value; renderizarQuadro(); });
   document.getElementById("filtro-responsavel").addEventListener("change", (e) => { filtroResponsavel = e.target.value; renderizarQuadro(); });
   document.getElementById("filtro-etiqueta").addEventListener("change", (e) => { filtroEtiqueta = e.target.value; renderizarQuadro(); });
+  document.getElementById("agrupar-por").addEventListener("change", renderizarQuadro);
+}
+
+// ---------------- Vista Gantt (Monday.com / Smartsheet) ----------------
+function renderizarGantt() {
+  const container = document.getElementById("gantt-container");
+  const tarefas = estado.tarefas.filter((t) => t.start_date && t.due_date && !t.parent_task_id);
+  if (tarefas.length === 0) {
+    container.innerHTML = `<p class="sub">Nenhuma tarefa tem data de início E prazo definidas ainda.</p>`;
+    return;
+  }
+  const inicios = tarefas.map((t) => new Date(t.start_date).getTime());
+  const fins = tarefas.map((t) => new Date(t.due_date).getTime());
+  const minimo = Math.min(...inicios);
+  const maximo = Math.max(...fins);
+  const amplitude = Math.max(maximo - minimo, 86400000);
+
+  const coresPrioridade = { alta: "var(--danger, #e05260)", media: "var(--warn, #e6a23c)", baixa: "var(--success, #2ecc71)" };
+  container.innerHTML = tarefas
+    .sort((a, b) => new Date(a.start_date) - new Date(b.start_date))
+    .map((t) => {
+      const ini = new Date(t.start_date).getTime();
+      const fim = new Date(t.due_date).getTime();
+      const esquerda = ((ini - minimo) / amplitude) * 100;
+      const largura = Math.max(((fim - ini) / amplitude) * 100, 1.5);
+      return `
+        <div class="gantt-row">
+          <div class="gantt-label" title="${t.title}">${t.title}</div>
+          <div class="gantt-track">
+            <div class="gantt-bar" style="left:${esquerda}%;width:${largura}%;background:${coresPrioridade[t.priority] || "var(--cyan)"}"
+                 title="${t.title}: ${formatarDataPt(t.start_date)} → ${formatarDataPt(t.due_date)}"
+                 onclick="abrirModalDetalhe('${t.id}')"></div>
+          </div>
+        </div>`;
+    })
+    .join("");
+}
+
+function formatarDataPt(iso) {
+  return new Date(iso).toLocaleDateString("pt-PT", { day: "2-digit", month: "short" });
 }
 
 // ---------------- Modal: nova tarefa ----------------
@@ -772,6 +923,7 @@ async function abrirModalDetalhe(taskId) {
     document.getElementById("et-prioridade").value = tarefaAtiva.priority;
     document.getElementById("et-responsavel").value = tarefaAtiva.assignee_id || "";
     document.getElementById("et-prazo").value = tarefaAtiva.due_date ? tarefaAtiva.due_date.substring(0, 10) : "";
+    document.getElementById("et-inicio").value = tarefaAtiva.start_date ? tarefaAtiva.start_date.substring(0, 10) : "";
     // Só responsáveis do projeto/administradores podem mudar quem vê a tarefa
     const campoVisibilidade = document.getElementById("campo-et-visibilidade");
     campoVisibilidade.style.display = souDonoDoProjeto() ? "block" : "none";
@@ -813,6 +965,13 @@ async function abrirModalDetalhe(taskId) {
   const formComentario = document.getElementById("form-comentario");
   if (formComentario) formComentario.style.display = podeInteragir ? "flex" : "none";
 
+  await Promise.all([
+    carregarCamposPersonalizadosTarefa(taskId, podeInteragir),
+    carregarDependencias(taskId, podeInteragir),
+    carregarSubtarefas(taskId, podeInteragir),
+    carregarCronometro(taskId),
+  ]);
+
   document.getElementById("overlay-detalhe").classList.add("open");
 }
 
@@ -831,7 +990,330 @@ function podeInteragirComTarefaAtiva() {
 function fecharModalDetalhe() {
   document.getElementById("overlay-detalhe").classList.remove("open");
   tarefaAtiva = null;
+  if (intervaloCronometro) { clearInterval(intervaloCronometro); intervaloCronometro = null; }
 }
+
+// ---------------- Campos personalizados (Monday.com / Smartsheet) ----------------
+async function carregarCamposPersonalizadosTarefa(taskId, podeInteragir) {
+  const container = document.getElementById("det-campos-personalizados");
+  if (!container) return;
+  try {
+    const campos = await api.get(`/api/tasks/${taskId}/campos`);
+    if (campos.length === 0) {
+      container.innerHTML = `<p class="sub" style="margin:0 0 14px">Sem campos personalizados neste projeto.</p>`;
+      return;
+    }
+    container.innerHTML = campos.map((c) => {
+      const valorAtual = c.value ?? "";
+      let input;
+      if (c.type === "lista") {
+        const opcoes = Array.isArray(c.options) ? c.options : [];
+        input = `<select data-campo-id="${c.field_id}" ${podeInteragir ? "" : "disabled"}>
+          <option value="">—</option>
+          ${opcoes.map((o) => `<option value="${escaparHtml(o)}" ${o === valorAtual ? "selected" : ""}>${escaparHtml(o)}</option>`).join("")}
+        </select>`;
+      } else {
+        const tipo = c.type === "numero" ? "number" : c.type === "data" ? "date" : "text";
+        input = `<input type="${tipo}" data-campo-id="${c.field_id}" value="${escaparHtml(valorAtual)}" ${podeInteragir ? "" : "disabled"} />`;
+      }
+      return `
+        <div class="field" style="margin-bottom:10px">
+          <label style="font-size:11.5px">${escaparHtml(c.name)}</label>
+          ${input}
+        </div>`;
+    }).join("");
+
+    container.querySelectorAll("[data-campo-id]").forEach((el) => {
+      el.addEventListener("change", async () => {
+        try {
+          await api.put(`/api/tasks/${taskId}/campos/${el.dataset.campoId}`, { value: el.value || null });
+        } catch (err) {
+          mostrarToast(err.message);
+        }
+      });
+    });
+  } catch (err) {
+    console.error("Erro ao carregar campos personalizados:", err);
+  }
+}
+
+// ---------------- Dependências entre tarefas (Asana) ----------------
+async function carregarDependencias(taskId, podeInteragir) {
+  const lista = document.getElementById("det-dependencias");
+  const select = document.getElementById("det-select-dependencia");
+  const linha = select?.closest(".mt-form-linha");
+  if (!lista || !select) return;
+  try {
+    const dependencias = await api.get(`/api/tasks/${taskId}/dependencias`);
+    lista.innerHTML = dependencias.map((d) => `
+      <span class="dependencia-chip ${d.concluida ? "concluida" : "bloqueada"}">
+        ${d.concluida ? "✓" : "⏳"} ${escaparHtml(d.title)}
+        ${podeInteragir ? `<span data-rem-dep="${d.id}" style="cursor:pointer">✕</span>` : ""}
+      </span>
+    `).join("") || `<p class="sub" style="margin:0">Esta tarefa não depende de nenhuma outra.</p>`;
+
+    lista.querySelectorAll("[data-rem-dep]").forEach((el) => {
+      el.addEventListener("click", async () => {
+        try {
+          await api.del(`/api/tasks/${taskId}/dependencias/${el.dataset.remDep}`);
+          carregarDependencias(taskId, podeInteragir);
+        } catch (err) {
+          mostrarToast(err.message);
+        }
+      });
+    });
+
+    // Opções: outras tarefas do mesmo projeto, exceto a própria e as já escolhidas
+    const idsJaDependentes = new Set(dependencias.map((d) => d.id));
+    const opcoes = estado.tarefas.filter((t) => t.id !== taskId && !idsJaDependentes.has(t.id) && !t.parent_task_id);
+    select.innerHTML = opcoes.map((t) => `<option value="${t.id}">${escaparHtml(t.title)}</option>`).join("");
+    if (linha) linha.style.display = podeInteragir ? "flex" : "none";
+  } catch (err) {
+    console.error("Erro ao carregar dependências:", err);
+  }
+}
+
+async function adicionarDependencia() {
+  const select = document.getElementById("det-select-dependencia");
+  if (!select || !select.value || !tarefaAtiva) return;
+  try {
+    await api.post(`/api/tasks/${tarefaAtiva.id}/dependencias`, { depends_on_task_id: select.value });
+    carregarDependencias(tarefaAtiva.id, podeInteragirComTarefaAtiva());
+  } catch (err) {
+    mostrarToast(err.message);
+  }
+}
+
+// ---------------- Subtarefas (Asana) ----------------
+async function carregarSubtarefas(taskId, podeInteragir) {
+  const lista = document.getElementById("det-subtarefas");
+  const form = document.getElementById("form-subtarefa");
+  if (!lista) return;
+  try {
+    const subtarefas = await api.get(`/api/tasks/${taskId}/subtarefas`);
+    lista.innerHTML = subtarefas.map((s) => `
+      <div class="subtarefa-row">
+        <input type="checkbox" data-sub-id="${s.id}" ${s.is_done ? "checked" : ""} ${podeInteragir ? "" : "disabled"} />
+        <span style="flex:1;cursor:pointer;${s.is_done ? "text-decoration:line-through;color:var(--ink-faint)" : ""}" data-abrir-sub="${s.id}">${escaparHtml(s.title)}</span>
+      </div>
+    `).join("") || `<p class="sub" style="margin:0">Sem subtarefas ainda.</p>`;
+
+    lista.querySelectorAll("[data-sub-id]").forEach((el) => {
+      el.addEventListener("change", () => alternarSubtarefaConcluida(el.dataset.subId, el.checked, taskId, podeInteragir));
+    });
+    lista.querySelectorAll("[data-abrir-sub]").forEach((el) => {
+      el.addEventListener("click", () => abrirModalDetalhe(el.dataset.abrirSub));
+    });
+
+    if (form) form.style.display = podeInteragir ? "flex" : "none";
+  } catch (err) {
+    console.error("Erro ao carregar subtarefas:", err);
+  }
+}
+
+// Marcar/desmarcar uma subtarefa move-a para a coluna "concluído" do projeto
+// (ou para a primeira coluna, ao desmarcar) — a mesma noção de "concluída"
+// usada em todo o resto da aplicação (board_columns.is_done).
+async function alternarSubtarefaConcluida(subId, concluida, taskId, podeInteragir) {
+  const colunaAlvo = concluida
+    ? estado.colunas.find((c) => c.is_done)
+    : [...estado.colunas].sort((a, b) => a.position - b.position)[0];
+  if (!colunaAlvo) { mostrarToast("Este projeto não tem uma coluna de 'concluído' definida."); return; }
+  try {
+    await api.patch(`/api/tasks/${subId}/mover`, { column_id: colunaAlvo.id, position: 0 });
+    carregarSubtarefas(taskId, podeInteragir);
+  } catch (err) {
+    mostrarToast(err.message);
+  }
+}
+
+document.getElementById("form-subtarefa")?.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const input = document.getElementById("input-subtarefa");
+  const titulo = input.value.trim();
+  if (!titulo || !tarefaAtiva) return;
+  try {
+    await api.post(`/api/tasks/${tarefaAtiva.id}/subtarefas`, { title: titulo });
+    input.value = "";
+    carregarSubtarefas(tarefaAtiva.id, podeInteragirComTarefaAtiva());
+  } catch (err) {
+    mostrarToast(err.message);
+  }
+});
+
+// ---------------- Cronómetro / registo de tempo (ClickUp) ----------------
+async function carregarCronometro(taskId) {
+  const botao = document.getElementById("btn-cronometro");
+  const display = document.getElementById("cron-tempo-total");
+  if (!botao || !display) return;
+  if (intervaloCronometro) { clearInterval(intervaloCronometro); intervaloCronometro = null; }
+  try {
+    const { total_segundos, a_correr } = await api.get(`/api/tasks/${taskId}/tempo`);
+    const atualizarTexto = (segundosBase, desde) => {
+      const extra = desde ? Math.floor((Date.now() - new Date(desde).getTime()) / 1000) : 0;
+      display.textContent = formatarDuracao(segundosBase + extra);
+    };
+    if (a_correr) {
+      botao.textContent = "⏸️ Parar";
+      botao.dataset.entryId = a_correr.id;
+      const base = total_segundos - Math.floor((Date.now() - new Date(a_correr.started_at).getTime()) / 1000);
+      atualizarTexto(base, a_correr.started_at);
+      intervaloCronometro = setInterval(() => atualizarTexto(base, a_correr.started_at), 1000);
+    } else {
+      botao.textContent = "▶️ Iniciar";
+      delete botao.dataset.entryId;
+      display.textContent = formatarDuracao(total_segundos);
+    }
+  } catch (err) {
+    console.error("Erro ao carregar o cronómetro:", err);
+  }
+}
+
+function formatarDuracao(segundos) {
+  const h = Math.floor(segundos / 3600);
+  const m = Math.floor((segundos % 3600) / 60);
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m`;
+  return `${segundos}s`;
+}
+
+async function alternarCronometro() {
+  if (!tarefaAtiva) return;
+  const botao = document.getElementById("btn-cronometro");
+  try {
+    if (botao.dataset.entryId) {
+      await api.post(`/api/tasks/tempo/${botao.dataset.entryId}/parar`, {});
+    } else {
+      await api.post(`/api/tasks/${tarefaAtiva.id}/tempo/iniciar`, {});
+    }
+    carregarCronometro(tarefaAtiva.id);
+  } catch (err) {
+    mostrarToast(err.message);
+  }
+}
+
+// ---------------- Campos personalizados do projeto (gestão) ----------------
+function abrirModalCamposPersonalizados() {
+  renderizarListaCamposPersonalizados();
+  document.getElementById("overlay-campos-personalizados").classList.add("open");
+}
+function fecharModalCamposPersonalizados() {
+  document.getElementById("overlay-campos-personalizados").classList.remove("open");
+}
+async function renderizarListaCamposPersonalizados() {
+  const container = document.getElementById("lista-campos-personalizados");
+  try {
+    camposPersonalizadosProjeto = await api.get(`/api/projects/${projectId}/campos`);
+    container.innerHTML = camposPersonalizadosProjeto.map((c) => `
+      <div style="display:flex;align-items:center;gap:8px;padding:6px 0;font-size:13px">
+        <span style="flex:1">${escaparHtml(c.name)} <span style="color:var(--ink-faint);font-size:11px">(${c.type})</span></span>
+        <span data-rem-campo="${c.id}" style="cursor:pointer;color:var(--ink-faint)">🗑️</span>
+      </div>
+    `).join("") || `<p class="sub" style="margin:0">Ainda não há campos personalizados.</p>`;
+
+    container.querySelectorAll("[data-rem-campo]").forEach((el) => {
+      el.addEventListener("click", async () => {
+        if (!confirm("Eliminar este campo personalizado? Os valores guardados nas tarefas também se perdem.")) return;
+        try {
+          await api.del(`/api/projects/campos/${el.dataset.remCampo}`);
+          renderizarListaCamposPersonalizados();
+        } catch (err) {
+          mostrarToast(err.message);
+        }
+      });
+    });
+  } catch (err) {
+    mostrarToast(err.message);
+  }
+}
+document.getElementById("cp-tipo")?.addEventListener("change", (e) => {
+  document.getElementById("cp-opcoes").style.display = e.target.value === "lista" ? "block" : "none";
+});
+document.getElementById("form-novo-campo")?.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const nome = document.getElementById("cp-nome").value.trim();
+  const tipo = document.getElementById("cp-tipo").value;
+  const opcoesTexto = document.getElementById("cp-opcoes").value.trim();
+  const options = tipo === "lista" ? opcoesTexto.split(",").map((o) => o.trim()).filter(Boolean) : undefined;
+  if (!nome) return;
+  try {
+    await api.post(`/api/projects/${projectId}/campos`, { name: nome, type: tipo, options });
+    document.getElementById("form-novo-campo").reset();
+    document.getElementById("cp-opcoes").style.display = "none";
+    renderizarListaCamposPersonalizados();
+  } catch (err) {
+    mostrarToast(err.message);
+  }
+});
+
+// ---------------- Metas do projeto (ClickUp) ----------------
+async function carregarMetas() {
+  const container = document.getElementById("metas-lista");
+  try {
+    const metas = await api.get(`/api/projects/${projectId}/metas`);
+    container.innerHTML = metas.map((m) => `
+      <div class="meta-card">
+        <div class="meta-card-topo">
+          <div>
+            <strong>${escaparHtml(m.name)}</strong>
+            ${m.target_date ? `<div class="sub" style="margin:2px 0 0">Até ${formatarData(m.target_date)}</div>` : ""}
+          </div>
+          ${souDonoDoProjeto() ? `<span data-rem-meta="${m.id}" style="cursor:pointer;color:var(--ink-faint)" title="Eliminar meta">🗑️</span>` : ""}
+        </div>
+        ${m.description ? `<p class="sub" style="margin:0 0 8px">${escaparHtml(m.description)}</p>` : ""}
+        <div class="meta-progresso-barra"><div class="meta-progresso-fill" style="width:${m.progresso}%"></div></div>
+        <div class="sub" style="margin:0 0 10px">${m.tarefas_concluidas}/${m.total_tarefas} tarefas concluídas (${m.progresso}%)</div>
+        ${souDonoDoProjeto() ? `
+          <select data-meta-add-tarefa="${m.id}" style="width:100%;padding:7px 10px;font-size:12.5px">
+            <option value="">+ Ligar uma tarefa a esta meta…</option>
+            ${estado.tarefas.filter((t) => !t.parent_task_id).map((t) => `<option value="${t.id}">${escaparHtml(t.title)}</option>`).join("")}
+          </select>` : ""}
+      </div>
+    `).join("") || `<p class="sub">Ainda não há metas definidas para este projeto.</p>`;
+
+    container.querySelectorAll("[data-rem-meta]").forEach((el) => {
+      el.addEventListener("click", async () => {
+        if (!confirm("Eliminar esta meta?")) return;
+        try { await api.del(`/api/projects/metas/${el.dataset.remMeta}`); carregarMetas(); }
+        catch (err) { mostrarToast(err.message); }
+      });
+    });
+    container.querySelectorAll("[data-meta-add-tarefa]").forEach((el) => {
+      el.addEventListener("change", async () => {
+        if (!el.value) return;
+        try {
+          await api.put(`/api/projects/metas/${el.dataset.metaAddTarefa}/tarefas/${el.value}`, {});
+          carregarMetas();
+        } catch (err) {
+          mostrarToast(err.message);
+        }
+      });
+    });
+  } catch (err) {
+    mostrarToast(err.message);
+  }
+}
+function abrirModalNovaMeta() {
+  document.getElementById("overlay-nova-meta").classList.add("open");
+}
+function fecharModalNovaMeta() {
+  document.getElementById("overlay-nova-meta").classList.remove("open");
+  document.getElementById("form-nova-meta").reset();
+}
+document.getElementById("form-nova-meta")?.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  try {
+    await api.post(`/api/projects/${projectId}/metas`, {
+      name: document.getElementById("meta-nome").value.trim(),
+      description: document.getElementById("meta-descricao").value.trim() || null,
+      target_date: document.getElementById("meta-data").value || null,
+    });
+    fecharModalNovaMeta();
+    carregarMetas();
+  } catch (err) {
+    mostrarToast(err.message);
+  }
+});
 
 function renderizarEtiquetasDetalhe() {
   const container = document.getElementById("det-etiquetas");
@@ -1059,6 +1541,7 @@ function ligarFormularios() {
         priority: document.getElementById("nt-prioridade").value,
         assignee_id: document.getElementById("nt-responsavel").value || null,
         due_date: document.getElementById("nt-prazo").value || null,
+        start_date: document.getElementById("nt-inicio").value || null,
         visibility: document.getElementById("nt-visibilidade").value,
       });
       if (etiquetasSelecionadasNaTarefaNova.size > 0) {
@@ -1088,6 +1571,7 @@ function ligarFormularios() {
         priority: document.getElementById("et-prioridade").value,
         assignee_id: document.getElementById("et-responsavel").value || null,
         due_date: document.getElementById("et-prazo").value || null,
+        start_date: document.getElementById("et-inicio").value || null,
       };
       if (document.getElementById("campo-et-visibilidade").style.display !== "none") {
         payload.visibility = document.getElementById("et-visibilidade").value;
@@ -1129,6 +1613,8 @@ function ligarFormularios() {
   document.getElementById("channel-input").addEventListener("input", () => {
     socket.emit("channel:digitando", { projectId });
   });
+
+  document.getElementById("channel-pesquisa").addEventListener("input", () => renderizarFeedCanal());
 
   let aAdicionarItemChecklist = false;
   document.getElementById("form-checklist").addEventListener("submit", async (e) => {
@@ -1224,11 +1710,13 @@ function ligarSeletorVistas() {
 
 function mudarVista(vista) {
   document.querySelectorAll(".view-tab").forEach((t) => t.classList.toggle("active", t.dataset.view === vista));
-  ["quadro", "lista", "calendario", "conversa", "automacoes"].forEach((v) => {
+  ["quadro", "lista", "calendario", "gantt", "metas", "conversa", "automacoes"].forEach((v) => {
     document.getElementById(`view-${v}`).style.display = v === vista ? "" : "none";
   });
   if (vista === "lista") renderizarListaTarefas();
   if (vista === "calendario") renderizarCalendario();
+  if (vista === "gantt") renderizarGantt();
+  if (vista === "metas") carregarMetas();
   if (vista === "conversa" && !vistasCarregadas.has("conversa")) { vistasCarregadas.add("conversa"); carregarCanal(); }
   if (vista === "automacoes" && !vistasCarregadas.has("automacoes")) { vistasCarregadas.add("automacoes"); carregarAutomacoes(); }
 }
@@ -1236,7 +1724,7 @@ function mudarVista(vista) {
 // ---------------- Vista de Lista ----------------
 function renderizarListaTarefas() {
   const nomeColuna = (colId) => estado.colunas.find((c) => c.id === colId)?.name || "—";
-  document.getElementById("tbody-lista-tarefas").innerHTML = estado.tarefas.map((t, i) => `
+  document.getElementById("tbody-lista-tarefas").innerHTML = estado.tarefas.filter((t) => !t.parent_task_id).map((t, i) => `
     <tr style="cursor:pointer" onclick="abrirModalDetalhe('${t.id}')">
       <td>${i + 1}</td>
       <td style="font-weight:600">${t.title}</td>
@@ -1264,7 +1752,7 @@ function renderizarCalendario() {
 
   const tarefasPorDia = new Map();
   estado.tarefas.forEach((t) => {
-    if (!t.due_date) return;
+    if (!t.due_date || t.parent_task_id) return;
     const chave = new Date(t.due_date).toDateString();
     if (!tarefasPorDia.has(chave)) tarefasPorDia.set(chave, []);
     tarefasPorDia.get(chave).push(t);
@@ -1314,10 +1802,30 @@ function fecharModalDia() {
 
 // ---------------- Vista de Conversa da equipa ----------------
 async function carregarCanal() {
-  const mensagens = await api.get(`/api/projects/${projectId}/mensagens`);
+  mensagensCanalCache = await api.get(`/api/projects/${projectId}/mensagens`);
+  renderizarFeedCanal({ manterScroll: false });
+}
+
+// Pesquisar na conversa (Slack): filtra localmente pelo texto da mensagem ou
+// nome do ficheiro — a conversa de um projeto é pequena o suficiente para não
+// precisar de pedir isto ao servidor. Mensagens eliminadas nunca aparecem
+// numa pesquisa, já que o conteúdo delas deixou de existir para mostrar.
+function renderizarFeedCanal({ manterScroll = true } = {}) {
   const feed = document.getElementById("channel-feed");
-  feed.innerHTML = mensagens.map(criarBolhaCanal).join("");
-  feed.scrollTop = feed.scrollHeight;
+  const termo = (document.getElementById("channel-pesquisa")?.value || "").trim().toLowerCase();
+  const pertoDoFim = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 80;
+
+  const lista = !termo ? mensagensCanalCache : mensagensCanalCache.filter((m) => {
+    if (m.deleted_at) return false;
+    const alvo = m.type === "texto" ? m.content : m.file_name;
+    return (alvo || "").toLowerCase().includes(termo);
+  });
+
+  feed.innerHTML = lista.map(criarBolhaCanal).join("") || (termo
+    ? `<div class="sub" style="text-align:center;margin-top:20px">Sem mensagens com "${escaparHtml(termo)}".</div>`
+    : `<div class="sub" style="text-align:center;margin-top:20px">Ainda não há mensagens nesta conversa.</div>`);
+
+  if (!termo && (manterScroll ? pertoDoFim : true)) feed.scrollTop = feed.scrollHeight;
 }
 
 function escaparHtml(texto) {
@@ -1325,6 +1833,19 @@ function escaparHtml(texto) {
   div.textContent = texto ?? "";
   return div.innerHTML;
 }
+
+// Realça menções "@Nome" no texto da mensagem (mesmas regras de deteção do
+// servidor: compara com o primeiro nome dos membros do projeto).
+function realcarMencoes(texto) {
+  const escapado = escaparHtml(texto);
+  const primeirosNomes = (estado.membros || []).map((m) => m.name.split(" ")[0]);
+  return escapado.replace(/@(\w+)/g, (match, nome) =>
+    primeirosNomes.some((n) => n.toLowerCase() === nome.toLowerCase())
+      ? `<span class="channel-mention">${match}</span>` : match
+  );
+}
+
+const EMOJIS_REACAO = ["👍", "❤️", "😂", "🎉", "😮", "👀"];
 
 function criarBolhaCanal(m) {
   const minha = m.user_id === eu?.id;
@@ -1341,8 +1862,22 @@ function criarBolhaCanal(m) {
   } else if (m.type === "ficheiro") {
     conteudo = `<a class="channel-file-chip" href="${urlComToken}" target="_blank" rel="noopener">📎 ${escaparHtml(m.file_name)} <span style="color:var(--ink-faint);margin-left:auto">${formatarTamanhoFicheiro(m.file_size || 0)}</span></a>`;
   } else {
-    conteudo = `<div class="bubble">${escaparHtml(m.content)}</div>`;
+    conteudo = `<div class="bubble">${realcarMencoes(m.content)}</div>`;
   }
+
+  // Responder (Slack): mostra uma pré-visualização da mensagem original por
+  // cima da bolha. "reply_to_id" null (não respondeu) ou a mensagem original
+  // já não existir/for de outro tipo não mostra nada.
+  const citacao = !eliminada && m.reply_to_id && m.reply_to_preview
+    ? `<div class="channel-msg-reply-preview">↩ ${escaparHtml(m.reply_to_autor)}: ${escaparHtml((m.reply_to_preview || "").slice(0, 80))}</div>`
+    : "";
+
+  // Reações: agrupa por emoji, mostra a contagem, e destaca as que a própria
+  // pessoa já deu (clicar de novo remove-a — o servidor é que alterna). A
+  // caixa fica sempre presente (mesmo vazia) com um id próprio, para que o
+  // evento de socket "channel:reaction" a possa atualizar diretamente sem
+  // ter de redesenhar a mensagem toda.
+  const reacoes = eliminada ? "" : `<div class="reacoes-box" id="reacoes-${m.id}">${construirChipsReacao(m.reacoes, m.id)}</div>`;
 
   // Ações: copiar/editar só fazem sentido em mensagens de texto ainda não
   // eliminadas; eliminar está sempre disponível (a própria pessoa escolhe
@@ -1351,8 +1886,13 @@ function criarBolhaCanal(m) {
   const podeEliminarTodos = minha || souDonoDoProjeto();
   const acoes = eliminada ? "" : `
     <div class="channel-msg-acoes">
+      <button type="button" class="channel-msg-acoes-btn" onclick="alternarEmojiPicker('${m.id}')" title="Reagir">🙂</button>
       <button type="button" class="channel-msg-acoes-btn" onclick="alternarMenuMensagem('${m.id}')" title="Mais ações">⋯</button>
+      <div class="emoji-picker" id="emoji-picker-${m.id}">
+        ${EMOJIS_REACAO.map((e) => `<span onclick="reagirMensagem('${m.id}', '${e}'); alternarEmojiPicker('${m.id}', false)">${e}</span>`).join("")}
+      </div>
       <div class="channel-msg-menu">
+        <div class="channel-msg-menu-item" onclick="responderMensagem('${m.id}')">↩️ Responder</div>
         ${m.type === "texto" ? `<div class="channel-msg-menu-item" onclick="copiarMensagem('${m.id}')">📋 Copiar</div>` : ""}
         ${minha && m.type === "texto" ? `<div class="channel-msg-menu-item" onclick="iniciarEdicaoMensagem('${m.id}')">✏️ Editar</div>` : ""}
         <div class="channel-msg-menu-item perigo" onclick="pedirEliminarMensagem('${m.id}', ${podeEliminarTodos})">🗑️ Eliminar</div>
@@ -1360,14 +1900,66 @@ function criarBolhaCanal(m) {
     </div>`;
 
   return `
-    <div class="channel-msg ${minha ? "mine" : ""} ${eliminada ? "eliminada" : ""}" data-msg-id="${m.id}" data-content="${escaparHtml(m.content || "")}">
+    <div class="channel-msg ${minha ? "mine" : ""} ${eliminada ? "eliminada" : ""}" data-msg-id="${m.id}" data-content="${escaparHtml(m.content || "")}" data-autor="${escaparHtml(m.autor_nome)}">
       <div class="avatar" style="width:28px;height:28px;font-size:11px;background:${m.avatar_color || corPara(m.user_id)}">${iniciais(m.autor_nome)}</div>
       <div style="flex:1;min-width:0">
         <div class="meta">${minha ? "Você" : m.autor_nome} · ${new Date(m.created_at).toLocaleString("pt-PT", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}${m.edited_at && !eliminada ? `<span class="channel-edited-tag">(editada)</span>` : ""}</div>
+        ${citacao}
         ${conteudo}
+        ${reacoes}
       </div>
       ${acoes}
     </div>`;
+}
+
+// ---------------- Reações emoji (Slack) ----------------
+function construirChipsReacao(reacoes, messageId) {
+  if (!reacoes || reacoes.length === 0) return "";
+  return Object.entries(reacoes.reduce((acc, r) => ((acc[r.emoji] = (acc[r.emoji] || []).concat(r.user_id)), acc), {}))
+    .map(([emoji, userIds]) => `
+      <span class="reacao-chip ${userIds.includes(eu?.id) ? "minha" : ""}" onclick="reagirMensagem('${messageId}', '${emoji}')" title="${userIds.length} reação(ões)">${emoji} ${userIds.length}</span>
+    `).join("");
+}
+
+function alternarEmojiPicker(id, forcar) {
+  document.querySelectorAll(".emoji-picker").forEach((p) => { if (p.id !== `emoji-picker-${id}`) p.style.display = "none"; });
+  const picker = document.getElementById(`emoji-picker-${id}`);
+  if (!picker) return;
+  const abrir = forcar !== undefined ? forcar : picker.style.display !== "flex";
+  picker.style.display = abrir ? "flex" : "none";
+}
+document.addEventListener("click", (e) => {
+  if (e.target.closest(".channel-msg-acoes")) return;
+  document.querySelectorAll(".emoji-picker").forEach((p) => (p.style.display = "none"));
+});
+
+async function reagirMensagem(id, emoji) {
+  try {
+    await api.post(`/api/projects/mensagens/${id}/reacoes`, { emoji });
+    // A atualização chega a todos (incluindo quem reagiu) via socket
+    // ("channel:reaction"), por isso não mexemos aqui para evitar duplicar.
+  } catch (err) {
+    mostrarToast(err.message);
+  }
+}
+
+// ---------------- Responder a uma mensagem (Slack) ----------------
+let respostaAtiva = null;
+function responderMensagem(id) {
+  const el = document.querySelector(`.channel-msg[data-msg-id="${id}"]`);
+  if (!el) return;
+  el.classList.remove("menu-aberto");
+  respostaAtiva = { id, autor: el.dataset.autor, preview: (el.dataset.content || "").slice(0, 80) };
+  const barra = document.getElementById("channel-reply-bar");
+  barra.innerHTML = `
+    <span>↩ A responder a <strong>${escaparHtml(respostaAtiva.autor)}</strong>: ${escaparHtml(respostaAtiva.preview)}</span>
+    <span class="fechar" onclick="cancelarResposta()">✕</span>`;
+  barra.style.display = "flex";
+  document.getElementById("channel-input")?.focus();
+}
+function cancelarResposta() {
+  respostaAtiva = null;
+  document.getElementById("channel-reply-bar").style.display = "none";
 }
 
 // Fecha qualquer menu de mensagem aberto ao clicar fora dele
@@ -1470,7 +2062,9 @@ async function enviarMensagemCanal(e) {
   const texto = input.value.trim();
   if (!texto) return;
   input.value = "";
-  await api.post(`/api/projects/${projectId}/mensagens`, { content: texto });
+  const reply_to_id = respostaAtiva?.id || undefined;
+  cancelarResposta();
+  await api.post(`/api/projects/${projectId}/mensagens`, { content: texto, reply_to_id });
   // A própria mensagem chega de volta via socket ("channel:message"), por isso
   // não a acrescentamos aqui — evita mostrá-la em duplicado.
 }

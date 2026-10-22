@@ -5,7 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Os meus projetos — GPI Track</title>
 <script>(function(){var t=localStorage.getItem("gpitrack_tema")||"escuro";document.documentElement.setAttribute("data-theme",t);document.documentElement.setAttribute("data-bs-theme",t==="claro"?"light":"dark");})();</script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" />
 <link rel="stylesheet" href="/css/styles.css" />
+<link rel="manifest" href="/manifest.json" />
+<meta name="theme-color" content="#0B1220" />
 </head>
 <body>
   <div class="app-shell">
@@ -40,6 +43,20 @@
           <button class="icon-toggle-btn btn-tema" title="Alternar tema claro/escuro">☀️</button>
           <div id="ancora-sino"></div>
         </div>
+      </div>
+      <div class="hero-strip">
+        <h2 id="hero-saudacao">Bem-vindo(a)</h2>
+        <p>Acompanhe os seus projetos, prazos e equipas num só lugar — tudo atualizado em tempo real.</p>
+        <div class="hero-acoes">
+          <button class="btn btn-primary" onclick="abrirModal()"><i class="bi bi-plus-circle"></i> Novo projeto</button>
+          <a class="btn btn-ghost" href="/funcionalidades.html" style="text-decoration:none"><i class="bi bi-play-circle"></i> Ver tutoriais</a>
+        </div>
+      </div>
+      <div class="row g-3 mb-4" id="kpis-projetos">
+        <div class="col-6 col-lg-3"><div class="kpi-tile"><span class="kpi-ico c1"><i class="bi bi-kanban"></i></span><div><div class="kpi-num" id="kpi-projetos">0</div><div class="kpi-label">Projetos</div></div></div></div>
+        <div class="col-6 col-lg-3"><div class="kpi-tile"><span class="kpi-ico c4"><i class="bi bi-card-checklist"></i></span><div><div class="kpi-num" id="kpi-tarefas">0</div><div class="kpi-label">Tarefas no total</div></div></div></div>
+        <div class="col-6 col-lg-3"><div class="kpi-tile"><span class="kpi-ico c2"><i class="bi bi-check2-circle"></i></span><div><div class="kpi-num" id="kpi-feitas">0</div><div class="kpi-label">Concluídas</div></div></div></div>
+        <div class="col-6 col-lg-3"><div class="kpi-tile"><span class="kpi-ico c3"><i class="bi bi-alarm"></i></span><div><div class="kpi-num" id="kpi-atraso">0</div><div class="kpi-label">Em atraso</div></div></div></div>
       </div>
       <div id="bloco-convites" style="display:none;margin-bottom:26px"></div>
       <div id="bloco-aprovar-convites" style="display:none;margin-bottom:26px"></div>
@@ -91,6 +108,7 @@
         <div class="logout-link" onclick="sair()">Saír</div>
       `;
 
+      document.getElementById("hero-saudacao").textContent = "Olá, " + eu.name.split(" ")[0] + " 👋";
       if (eu.role === "admin") document.getElementById("nav-admin").style.display = "block";
 
       const socket = io({ auth: { token: sessao.obterToken() } });
@@ -178,6 +196,14 @@
 
       grid.innerHTML = "";
       lateral.innerHTML = "";
+      const soma = (k) => projetos.reduce((n, p) => n + (Number(p[k]) || 0), 0);
+      document.getElementById("kpi-projetos").textContent = projetos.length;
+      document.getElementById("kpi-tarefas").textContent = soma("total_tarefas");
+      document.getElementById("kpi-feitas").textContent = soma("tarefas_concluidas");
+      document.getElementById("kpi-atraso").textContent = soma("tarefas_atrasadas");
+      if (projetos.length === 0) {
+        grid.innerHTML = `<div class="empty-rich" style="grid-column:1/-1"><div class="ico"><i class="bi bi-rocket-takeoff"></i></div><h4>Ainda não tem projetos</h4><p>Crie o primeiro projeto para ter um quadro Kanban em tempo real, ou aguarde um convite da sua equipa.</p><button class="btn btn-primary" onclick="abrirModal()"><i class="bi bi-plus-circle"></i> Criar o primeiro projeto</button></div>`;
+      }
 
       projetos.forEach((p) => {
         const souResponsavel = eu.role === "admin" || p.meu_papel === "responsavel";
@@ -187,16 +213,27 @@
           ? `<span data-del-proj="${p.id}" data-nome="${p.name.replace(/"/g, "&quot;")}" style="cursor:pointer;color:var(--ink-faint)" title="Eliminar projeto">🗑️</span>
              <span data-sair-proj="${p.id}" style="cursor:pointer;color:var(--ink-faint);margin-left:8px" title="Sair do projeto">🚪</span>`
           : `<span data-sair-proj="${p.id}" style="cursor:pointer;color:var(--ink-faint)" title="Sair do projeto">🚪</span>`;
+        const feitas = p.tarefas_concluidas || 0;
+        const total = Number(p.total_tarefas) || 0;
+        const pct = total ? Math.round((feitas / total) * 100) : 0;
         grid.innerHTML += `
-          <div class="project-card" onclick="abrirProjeto('${p.id}')">
-            <div style="display:flex;justify-content:space-between;align-items:flex-start">
-              <h3>${p.name}</h3>
-              <span onclick="event.stopPropagation()">${acao}</span>
-            </div>
-            <p>${p.description || "Sem descrição."}</p>
-            <div class="meta">
-              <span>${p.total_tarefas} tarefa(s)</span>
-              <span>${souResponsavel ? "Responsável" : "Membro"}</span>
+          <div class="project-card pc2" onclick="abrirProjeto('${p.id}')">
+            <div class="pc2-faixa"></div>
+            <div class="pc2-corpo">
+              <div class="pc2-topo">
+                <h3>${p.name}</h3>
+                <span class="pc2-acoes" onclick="event.stopPropagation()">${acao}</span>
+              </div>
+              <p>${p.description || "Sem descrição."}</p>
+              <div class="pc2-progresso">
+                <div class="progress" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100"><div class="progress-bar" style="width:${pct}%"></div></div>
+                <small><span>${feitas}/${total} concluídas</span><b>${pct}%</b></small>
+              </div>
+              <div class="pc2-rodape">
+                <span class="pc2-badge ${souResponsavel ? "resp" : ""}"><i class="bi ${souResponsavel ? "bi-shield-check" : "bi-person"}"></i> ${souResponsavel ? "Responsável" : "Membro"}</span>
+                <span class="pc2-badge"><i class="bi bi-people"></i> ${p.total_membros || 1}</span>
+                ${p.tarefas_atrasadas ? `<span class="pc2-badge atraso"><i class="bi bi-alarm"></i> ${p.tarefas_atrasadas} em atraso</span>` : ""}
+              </div>
             </div>
           </div>
         `;

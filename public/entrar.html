@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>GPI Track — Gestão de Projetos em Equipa</title>
 <link rel="stylesheet" href="/css/styles.css" />
+<link rel="manifest" href="/manifest.json" />
+<meta name="theme-color" content="#0B1220" />
 </head>
 <body>
   <div class="auth-shell">
@@ -56,6 +58,20 @@
             <div class="google-slot" id="google-login"></div>
           </div>
           <div class="hint" id="hint-demo" style="display:none">Conta de demonstração: vital@ukv.ao / 123456</div>
+        </div>
+
+        <div id="painel-mfa" style="display:none">
+          <h2>Verificação em dois passos</h2>
+          <div class="sub">Introduza o código de 6 dígitos da sua app autenticadora.</div>
+          <div class="error-box" id="erro-mfa"></div>
+          <form id="form-mfa">
+            <div class="field">
+              <label>Código</label>
+              <input type="text" id="mfa-codigo" inputmode="numeric" maxlength="6" placeholder="000000" autofocus required />
+            </div>
+            <button class="btn btn-primary" type="submit">Entrar</button>
+            <button class="btn" type="button" style="width:100%;margin-top:8px" onclick="cancelarMFA()">Cancelar</button>
+          </form>
         </div>
 
         <div id="painel-registo" style="display:none">
@@ -117,9 +133,40 @@
       const erroBox = document.getElementById("erro-login");
       erroBox.style.display = "none";
       try {
-        const { token } = await api.post("/api/auth/login", {
+        const resposta = await api.post("/api/auth/login", {
           email: document.getElementById("login-email").value,
           password: document.getElementById("login-password").value,
+        });
+        if (resposta.mfa_required) {
+          mostrarPassoMFA(resposta.mfa_token);
+          return;
+        }
+        sessao.guardarToken(resposta.token);
+        window.location.href = "/projetos.html";
+      } catch (err) {
+        erroBox.textContent = err.message;
+        erroBox.style.display = "block";
+      }
+    });
+
+    // ---- Segundo passo: código de 6 dígitos (2FA/TOTP) ----
+    let mfaTokenPendente = null;
+    function mostrarPassoMFA(token) {
+      mfaTokenPendente = token;
+      document.getElementById("painel-login").style.display = "none";
+      document.getElementById("painel-registo").style.display = "none";
+      document.querySelector(".tabs").style.display = "none";
+      document.getElementById("painel-mfa").style.display = "block";
+      document.getElementById("mfa-codigo").focus();
+    }
+    document.getElementById("form-mfa").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const erroBox = document.getElementById("erro-mfa");
+      erroBox.style.display = "none";
+      try {
+        const { token } = await api.post("/api/auth/mfa/verificar-login", {
+          mfa_token: mfaTokenPendente,
+          code: document.getElementById("mfa-codigo").value.trim(),
         });
         sessao.guardarToken(token);
         window.location.href = "/projetos.html";
@@ -128,6 +175,13 @@
         erroBox.style.display = "block";
       }
     });
+    function cancelarMFA() {
+      mfaTokenPendente = null;
+      document.getElementById("painel-mfa").style.display = "none";
+      document.querySelector(".tabs").style.display = "flex";
+      document.getElementById("painel-login").style.display = "block";
+      document.getElementById("form-login").reset();
+    }
 
     // ---- Barra de força da password ----
     let senhaAceite = false;
@@ -170,7 +224,9 @@
           const erroBox = document.getElementById(painelRegisto ? "erro-registo" : "erro-login");
           erroBox.style.display = "none";
           try {
-            const { token, novo } = await api.post("/api/auth/google", { credential });
+            const resp = await api.post("/api/auth/google", { credential });
+            if (resp.mfa_required) { mostrarPassoMFA(resp.mfa_token); return; }
+            const { token, novo } = resp;
             sessao.guardarToken(token);
             window.location.href = novo ? "/onboarding.html" : "/projetos.html";
           } catch (err) {

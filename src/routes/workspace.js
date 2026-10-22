@@ -98,7 +98,7 @@ router.get("/tarefas", async (req, res) => {
     const { rows } = await pool.query(
       `SELECT t.id, t.title, t.priority, t.due_date, t.created_at,
               p.id AS project_id, p.name AS projeto_nome,
-              bc.name AS coluna_nome
+              bc.name AS coluna_nome, bc.is_done
        FROM gpitrack.tasks t
        JOIN gpitrack.projects p ON p.id = t.project_id
        JOIN gpitrack.board_columns bc ON bc.id = t.column_id

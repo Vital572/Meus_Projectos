@@ -11,8 +11,8 @@ Ordem: **1. Supabase (base de dados)** → **2. Supabase (ficheiros)** → **3. 
 > Guarde num bloco de notas, à medida que avança: a password da base de dados, a `DATABASE_URL`,
 > o `SUPABASE_URL` e o `SUPABASE_SECRET_KEY`. Vai precisar deles no passo 4.
 
-> **Esta versão do guia já inclui** a autenticação em dois passos (2FA), as subtarefas, o Gantt, o registo de tempo,
-> a exportação Excel e a app instalável (PWA). O `db/schema.sql` já traz **todas as tabelas até à migração v15**:
+> **Esta versão do guia já inclui** a autenticação em dois passos (2FA), subtarefas, Gantt, registo de tempo (incl. automático),
+> grupos de conversa, sincronização em tempo real, exportação Excel e a app instalável (PWA). O `db/schema.sql` já traz **todas as tabelas até à migração v19**:
 > numa base nova basta executar o `schema.sql` (não execute os `migration_vXX.sql` um a um).
 
 ---
@@ -31,6 +31,8 @@ Ordem: **1. Supabase (base de dados)** → **2. Supabase (ficheiros)** → **3. 
 | O login com Google não pedia o código do **2FA** | Agora pede (o Google não dispensa o 2FA de quem o ativou) |
 | O código de 6 dígitos do 2FA podia ser testado sem limite | Limite de tentativas no endpoint do código |
 | Eliminar uma tarefa deixava os anexos das **subtarefas** no armazenamento | A limpeza inclui as subtarefas |
+| Eliminar um **grupo de conversa** deixava os seus ficheiros/áudios no armazenamento | A limpeza inclui as mensagens do grupo |
+| `npm run carga` criaria dezenas de utilizadores falsos na base **online** | Recusa correr contra uma base remota (pede confirmação) |
 
 ---
 
@@ -186,6 +188,7 @@ Se já seguiu o guia do README para o Google no seu PC, só precisa de **acresce
 - **2FA (autenticador)**: funciona online como no seu PC. O código depende da hora; o Render tem a hora certa, mas o telemóvel também tem de ter a hora automática.
 - **App instalável (PWA)**: só funciona em **HTTPS**, e o endereço `onrender.com` já o tem. No telemóvel (Chrome): menu ⋮ → *Instalar aplicação*. Depois de cada deploy a app atualiza-se sozinha (rede primeiro; a cache só serve se estiver sem internet).
 - **Entrar com o Google numa conta que já existia com password**: a conta fica associada ao Google e a password antiga é **anulada** (para ninguém poder ficar com acesso a uma conta registando-se antes com o e-mail de outra pessoa). A pessoa entra com o Google, ou define uma password nova em "Esqueceu a password?".
+- **Teste de carga (`npm run carga`)**: é só para o seu PC (base local). Contra o Supabase recusa-se a correr; se alguma vez correu e deixou dados falsos, `npm run carga:limpar` apaga-os.
 - **Exportar para Excel / PDF**: geram-se no servidor, em memória — não precisam de disco.
 
 ## ⚠️ Segredos: o `.env` nunca vai para o GitHub

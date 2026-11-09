@@ -25,14 +25,22 @@ router.use(async (req, res, next) => {
   }
 });
 
-// Devolve os ids de todos os projetos a que o utilizador pertence
-// (dono ou membro) — usado como âmbito de tudo o resto abaixo.
-async function projetosDoUtilizador(userId) {
+// Devolve os ids dos projetos que o Espaço de Gestão pode mostrar a esta pessoa:
+// um administrador vê os projetos a que pertence; qualquer outra pessoa vê
+// APENAS os projetos de que é responsável — nunca os projetos em que é só
+// membro (aí não tem acesso ao Espaço de Gestão, mesmo que seja responsável
+// de outro projeto).
+async function projetosDoUtilizador(user) {
+  // Administradores veem todos os projetos da plataforma no Espaço de Gestão
+  if (user.role === "admin") {
+    const { rows: todos } = await pool.query(`SELECT id FROM gpitrack.projects`);
+    return todos.map((r) => r.id);
+  }
   const { rows } = await pool.query(
     `SELECT DISTINCT p.id FROM gpitrack.projects p
      JOIN gpitrack.project_members pm ON pm.project_id = p.id
-     WHERE pm.user_id = $1 AND pm.status = 'ativo'`,
-    [userId]
+     WHERE pm.user_id = $1 AND pm.status = 'ativo' AND ($2::boolean OR pm.role = 'responsavel')`,
+    [user.id, user.role === "admin"]
   );
   return rows.map((r) => r.id);
 }
@@ -70,7 +78,7 @@ router.get("/equipas", async (req, res) => {
 // aba "Atividades recentes" do Espaço de Gestão.
 router.get("/atividades", async (req, res) => {
   try {
-    const idsProjetos = await projetosDoUtilizador(req.user.id);
+    const idsProjetos = await projetosDoUtilizador(req.user);
     if (idsProjetos.length === 0) return res.json([]);
 
     const { rows } = await pool.query(
@@ -102,10 +110,11 @@ router.get("/tarefas", async (req, res) => {
        FROM gpitrack.tasks t
        JOIN gpitrack.projects p ON p.id = t.project_id
        JOIN gpitrack.board_columns bc ON bc.id = t.column_id
-       WHERE t.assignee_id = $1
-          OR EXISTS (SELECT 1 FROM gpitrack.task_responsibles tr WHERE tr.task_id = t.id AND tr.user_id = $1)
+       WHERE (t.assignee_id = $1
+          OR EXISTS (SELECT 1 FROM gpitrack.task_responsibles tr WHERE tr.task_id = t.id AND tr.user_id = $1))
+         AND t.project_id = ANY($2)
        ORDER BY (t.due_date IS NULL), t.due_date ASC, t.created_at DESC`,
-      [req.user.id]
+      [req.user.id, await projetosDoUtilizador(req.user)]
     );
     res.json(rows);
   } catch (err) {
@@ -117,12 +126,12 @@ router.get("/tarefas", async (req, res) => {
 // GET /api/workspace/membros — colegas de equipa, agrupados por projeto
 router.get("/membros", async (req, res) => {
   try {
-    const idsProjetos = await projetosDoUtilizador(req.user.id);
+    const idsProjetos = await projetosDoUtilizador(req.user);
     if (idsProjetos.length === 0) return res.json([]);
 
     const { rows } = await pool.query(
       `SELECT p.id AS project_id, p.name AS projeto_nome, p.created_by,
-              u.id AS user_id, u.name, u.email, u.avatar_color
+              u.id AS user_id, u.name, u.email, u.avatar_color, pm.role AS papel
        FROM gpitrack.projects p
        JOIN gpitrack.project_members pm ON pm.project_id = p.id AND pm.status = 'ativo'
        JOIN gpitrack.users u ON u.id = pm.user_id
@@ -138,7 +147,7 @@ router.get("/membros", async (req, res) => {
       }
       porProjeto.get(r.project_id).membros.push({
         id: r.user_id, name: r.name, email: r.email, avatar_color: r.avatar_color,
-        responsavel: r.created_by === r.user_id,
+        responsavel: r.papel === "responsavel",
       });
     }
     res.json([...porProjeto.values()]);
@@ -151,7 +160,7 @@ router.get("/membros", async (req, res) => {
 // GET /api/workspace/dashboard — dados agregados para os gráficos (só os seus projetos)
 router.get("/dashboard", async (req, res) => {
   try {
-    const idsProjetos = await projetosDoUtilizador(req.user.id);
+    const idsProjetos = await projetosDoUtilizador(req.user);
     if (idsProjetos.length === 0) {
       return res.json({ tarefas_por_prioridade: [], tarefas_por_coluna: [], top_projetos: [], tarefas_por_dia: [] });
     }
@@ -207,7 +216,7 @@ router.get("/dashboard", async (req, res) => {
 // GET /api/workspace/relatorios — resumo pessoal (âmbito: só os seus projetos)
 router.get("/relatorios", async (req, res) => {
   try {
-    const idsProjetos = await projetosDoUtilizador(req.user.id);
+    const idsProjetos = await projetosDoUtilizador(req.user);
     if (idsProjetos.length === 0) {
       return res.json({ total_projetos: 0, total_tarefas: 0, tarefas_concluidas: 0, tarefas_atrasadas: 0, por_prioridade: [] });
     }
@@ -274,7 +283,7 @@ router.get("/relatorios/exportar.csv", async (req, res) => {
 // GET /api/workspace/reunioes — reuniões de todos os projetos do utilizador
 router.get("/reunioes", async (req, res) => {
   try {
-    const idsProjetos = await projetosDoUtilizador(req.user.id);
+    const idsProjetos = await projetosDoUtilizador(req.user);
     if (idsProjetos.length === 0) return res.json([]);
 
     const { rows } = await pool.query(
@@ -304,8 +313,8 @@ router.post("/reunioes", async (req, res) => {
   }
 
   try {
-    const podeAgendar = await ehMembroDoProjeto(req.user, project_id);
-    if (!podeAgendar) return res.status(403).json({ erro: "Sem permissão para marcar reuniões neste projeto." });
+    const podeAgendar = await ehDonoDoProjetoOuAdmin(req.user, project_id);
+    if (!podeAgendar) return res.status(403).json({ erro: "Só responsáveis do projeto ou administradores podem marcar reuniões." });
 
     const { rows } = await pool.query(
       `INSERT INTO gpitrack.meetings (project_id, title, description, scheduled_at, location, created_by)
@@ -328,6 +337,7 @@ router.post("/reunioes", async (req, res) => {
         content: `${req.user.name} marcou a reunião "${title.trim()}" em "${projeto?.name || "um projeto"}".`,
         projectId: project_id,
       });
+      io.to(`user:${m.user_id}`).emit("reunioes:alteradas");
     }
 
     res.status(201).json({ ...reuniao, criado_por_nome: req.user.name, projeto_nome: projeto?.name });
@@ -362,6 +372,7 @@ router.delete("/reunioes/:id", async (req, res) => {
         content: `${req.user.name} cancelou a reunião "${reuniao.title}".`,
         projectId: reuniao.project_id,
       });
+      io.to(`user:${m.user_id}`).emit("reunioes:alteradas");
     }
 
     res.json({ ok: true });

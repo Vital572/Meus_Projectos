@@ -119,8 +119,16 @@ function configurarSockets(io) {
     });
 
     // Indicador "a escrever..." na conversa da equipa (canal do projeto)
-    socket.on("channel:digitando", ({ projectId }) => {
-      socket.to(`project:${projectId}`).emit("channel:digitando", { user: socket.user.name });
+    socket.on("channel:digitando", async ({ projectId, grupoId }) => {
+      if (!grupoId) {
+        socket.to(`project:${projectId}`).emit("channel:digitando", { user: socket.user.name, grupoId: null });
+        return;
+      }
+      try {
+        const { rows } = await pool.query(`SELECT user_id FROM gpitrack.channel_group_members WHERE group_id = $1`, [grupoId]);
+        if (!rows.some((r) => r.user_id === socket.user.id)) return;
+        for (const r of rows) if (r.user_id !== socket.user.id) io.to(`user:${r.user_id}`).emit("channel:digitando", { user: socket.user.name, grupoId });
+      } catch { /* indicador é só cosmético */ }
     });
 
     socket.on("disconnect", () => {

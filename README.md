@@ -264,6 +264,16 @@ campos personalizados, registo de tempo, metas, reações/respostas/menções no
 canal nem a autenticação de dois fatores**, aplique também o
 `db/migration_v15.sql` (ver a secção seguinte para o que cada coisa é).
 
+Por fim, aplique `db/migration_v16.sql` (índices de desempenho descobertos no
+teste de carga — só cria índices, é seguro correr mais de uma vez).
+
+Para a **seleção de mensagens, mensagens fixadas e grupos da conversa**,
+aplique `db/migration_v17.sql` (colunas `pinned_at`/`pinned_by`/`group_id` em
+`channel_messages` e tabelas `channel_groups` e `channel_group_members`).
+
+Aplique também `db/migration_v18.sql` (coluna `papel` em `channel_group_members`:
+responsáveis do grupo).
+
 ## Novidades inspiradas nas 5 ferramentas estudadas
 
 Depois de comparar o GPI Track com as 5 ferramentas do trabalho (Slack,
@@ -342,6 +352,36 @@ abordagem:
   estados vazios com ilustração e colunas com "Arraste tarefas para aqui".
   Não há migração de base de dados nova nesta versão; só é preciso substituir os
   ficheiros e reiniciar (`npm start`).
+
+## Teste de carga (muitos dados de uma vez)
+
+O script `db/carga.js` enche a plataforma com dados em grande volume usando a
+**API real** (por isso passa pelas mesmas permissões, notificações, automações e
+eventos em tempo real de um utilizador normal) e mede como tudo reage: vários
+projetos, vários responsáveis por projeto, convites com aprovação, tarefas com
+etiquetas/checklist/subtarefas/dependências/campos personalizados/anexos,
+comentários com menções, movimentos que disparam automações, metas, Gantt
+(datas de início e prazo), registo de tempo, reuniões, conversa da equipa com
+respostas/reações/edições/eliminações/ficheiros/áudio, anúncios da
+administração, feedback e 100 mensagens em rajada para dezenas de ligações
+Socket.IO ao mesmo tempo.
+
+```bash
+npm install                      # (instala também o socket.io-client usado no teste)
+npm start                        # num terminal
+npm run carga                    # noutro terminal — escala média (40 utilizadores, 12 projetos)
+npm run carga -- --escala=pequena|media|grande|extrema
+npm run carga -- --eu=o-seu@email.com   # junta a SUA conta a todos os projetos (metade como responsável)
+npm run carga:limpar             # apaga tudo o que a carga criou
+```
+
+No fim escreve `relatorio-carga-<escala>.md` (tempos p50/p95 por endpoint, volume
+na base de dados, tamanho por tabela, entrega em tempo real). Os utilizadores
+criados são `carga001@carga.gpitrack.test`, … com a password `Carga#2026x`.
+Aplique também `db/migration_v16.sql` (índices) antes de testar volumes grandes.
+
+> Ver "Resultados do teste de carga" no fim deste ficheiro para o que foi
+> descoberto e corrigido.
 
 ## Liberdade para sair de um projeto — correção importante
 
@@ -600,8 +640,7 @@ Resumo do que muda online (e já está feito no código):
   Eliminar uma tarefa, um projeto, ou uma mensagem "para todos" apaga também os ficheiros.
 - E-mails pela **Gmail API (HTTPS)** — o Render grátis bloqueia SMTP.
 - Lembretes de prazo às 08:00 na hora de Angola (`TZ_LEMBRETES`, por defeito `Africa/Luanda`).
-- A app **não arranca** online sem `JWT_SECRET`; o `npm run seed` **recusa** apagar uma base remota;
-  a "conta de demonstração" só aparece com `MOSTRAR_CONTA_DEMO=true` (desenvolvimento local).
+- A app **não arranca** online sem `JWT_SECRET`; o `npm run seed` e o `npm run carga` **recusam** correr contra uma base remota (pedem confirmação);
 - `/api/saude` para o Render e para serviços de *keep-alive*; arranque com diagnóstico da base de dados nos registos.
 
 Em desenvolvimento local nada muda: sem `DATABASE_URL` nem `SUPABASE_*`, continua a usar o PostgreSQL
@@ -692,6 +731,105 @@ geral → "Notificações por e-mail"**. Com `EMAIL_APENAS_OFFLINE=true` só rec
 não está online nesse momento. O envio corre em segundo plano — se o e-mail falhar, a
 notificação em tempo real não é afetada.
 
+## Conversa da equipa: seleção, fixar e grupos (v17)
+
+- **Selecionar mensagens** (botão "Selecionar" ou "☑️ Selecionar" no menu ⋯ de
+  uma mensagem): marque várias e use **Copiar** ou **Eliminar**.
+  - Só mensagens suas → "Eliminar para todos" ou "Eliminar para mim".
+  - Mensagens de outras pessoas, ou seleção mista → apenas "Eliminar para mim"
+    (os outros continuam a vê-las).
+  - O "⋯ → Eliminar" de uma só mensagem mantém a regra anterior (um
+    responsável/admin pode também eliminar para todos uma mensagem alheia,
+    como moderação).
+- **Fixar mensagem** (📌, só responsáveis do projeto e administradores): as
+  mensagens fixadas aparecem numa barra no topo da conversa (clique para
+  saltar à mensagem). Máximo de 10 por conversa; eliminar uma mensagem para
+  todos desafixa-a.
+- **Grupos**: administradores e responsáveis criam grupos (botão "Novo grupo"),
+  escolhem os membros e, opcionalmente, ligam o grupo a uma **tarefa** (quem
+  está atribuído/é responsável da tarefa entra automaticamente; também há o
+  botão "Grupo da tarefa" no detalhe da tarefa). As mensagens de um grupo só
+  são vistas — e recebidas em tempo real — pelos seus membros. Responsáveis e
+  administradores veem todos os grupos do projeto, mas têm de "Entrar" para
+  ler. Qualquer membro pode sair de um grupo.
+
+### Grupo ao criar a tarefa e janelas renovadas (v18)
+
+- Na janela **Nova tarefa** (responsáveis do projeto/admin) há o interruptor
+  "Criar um grupo de conversa para esta tarefa": escolhe-se o nome, quem entra
+  e, com **★**, os **responsáveis do grupo** (podem gerir nome e membros do
+  grupo). O responsável da tarefa é adicionado automaticamente.
+- **Animações (v19)**: janelas abrem e fecham com transição; campos entram em
+  cascata; cartões, colunas e KPIs entram em sequência ao carregar; contadores
+  "sobem" até ao valor; mensagens novas, reações, fixar e grupos têm efeito
+  próprio; botões têm ondulação ao clicar; o sino abana com notificações novas.
+  As animações ficam ativas mesmo que o sistema tenha "reduzir movimento".
+- Todas as janelas têm agora animações de entrada, campos com brilho ao
+  focar, barras de rolagem finas e personalizadas, **ESC** e clique no fundo
+  para fechar. Respeita "reduzir movimento" do sistema.
+
+### Navegação pelas colunas do quadro (v20)
+
+O quadro tem altura limitada ao ecrã: cada coluna rola por dentro e a barra
+horizontal fica sempre visível, sem ter de descer a página. Há ainda setas
+laterais ‹ ›, atalhos "Ir para: coluna" (com a coluna atual realçada), roda do
+rato sobre o cabeçalho a rolar na horizontal, arrastar o fundo para empurrar o
+quadro, rolagem automática ao arrastar uma tarefa para a borda, e
+**Alt + ← / →** para saltar de coluna.
+
+### Ficheiros da conversa (correção)
+
+Os ficheiros da conversa eram servidos sem nome (o navegador gravava-os como
+"ficheiro", sem extensão, e não abriam). Agora o servidor envia o nome original
+e o tipo correto: PDF, imagens, áudio e texto abrem no navegador; Word, Excel,
+ZIP, etc. são descarregados com o nome certo. Cada ficheiro tem também um botão
+⬇ para descarregar. Os nomes com acentos passam a ficar corretos.
+
+### Telemóvel: "Ir para" fixo e notificações em ecrã
+
+No telemóvel a barra "Ir para" (colunas do quadro) fica **fixa no topo** enquanto
+rola a página, com botões maiores e o atalho da coluna atual sempre centrado. O
+painel de notificações (quadro, espaço de gestão e administração) ocupa a
+largura do ecrã e tem botão ✕ para fechar.
+
+### Janelas próprias em vez das do navegador
+
+A criação de etiquetas (nome + escolha de cor com pré-visualização) e todas as
+confirmações ("Eliminar…?", "Sair…?") e avisos usam agora janelas da plataforma,
+com o mesmo estilo e animação das outras (ESC cancela, Enter confirma). Ficam
+em `gpiConfirm`, `gpiPrompt` e `gpiAviso`, em `public/js/ui-shell.js`.
+
+### Calendário compacto
+
+Cada dia mostra só o número de tarefas e bolinhas coloridas por prioridade. Ao
+passar o rato aparece uma pré-visualização com os títulos; ao clicar (ou tocar,
+no telemóvel) abre a janela com todas as tarefas do dia.
+
+### Pesquisa e filtros nas vistas
+
+- **Lista**: pesquisa (título, coluna, responsável) + filtros de coluna e prioridade.
+- **Metas** e **Automações**: barra de pesquisa com contagem de resultados.
+- **Calendário**: escolher mês e ano, botão Hoje, "Ir para o dia", **período
+  de… até…** (realça os dias e permite "Ver lista do período"), pesquisa e
+  filtros por prioridade, responsável e estado (pendentes/concluídas/em atraso).
+  A pesquisa ignora acentos e maiúsculas.
+
+### Pesquisa dentro do dia do calendário
+
+A janela com as tarefas de um dia (e a "lista do período") tem uma barra de
+pesquisa por título, coluna, responsável ou prioridade, com contagem.
+
+### Telemóvel: lista em cartões, filtros recolhíveis e janelas
+
+No telemóvel a Lista de tarefas aparece em cartões (sem rolar para o lado), os
+filtros do calendário ficam atrás do botão "Filtros" (com contagem dos ativos),
+e todas as janelas abrem como folha vinda de baixo.
+
+### Menu lateral no telemóvel
+
+No telemóvel, ao escolher uma opção do menu lateral (Espaço de gestão,
+Administração, projetos, etc.) o menu fecha-se sozinho. No computador nada muda.
+
 ## Possíveis extensões futuras
 
 - Sincronização de dados em segundo plano quando a app volta a ficar online
@@ -699,3 +837,71 @@ notificação em tempo real não é afetada.
   sincroniza ações feitas sem ligação)
 - Vista de "Mapa Mental" para organizar tarefas (ClickUp)
 - Integração com calendários externos (Google Calendar/Outlook)
+
+## Permissões: membros não criam (v21)
+Só responsáveis do projeto e administradores podem criar tarefas, subtarefas, dependências, etiquetas (e atribuí-las), metas, colunas, campos personalizados, automações, grupos e reuniões. O servidor devolve 403 e a interface esconde os botões. Membros continuam a comentar, conversar, anexar ficheiros e registar tempo.
+
+### Correção: "+ Nova coluna" (v22)
+O arrastar-para-deslocar do quadro capturava o rato logo ao premir, o que engolia o clique no cartão "+ Nova coluna". Agora só começa a deslocar depois de arrastar uns píxeis, por isso o clique simples abre a janela normalmente.
+
+
+## Perfil do membro (v24)
+- Ao clicar num membro da equipa (barra lateral), um responsável ou administrador vê a ficha: nome, email, papel, estado (online/offline), última vez online e tarefas atribuídas (clicáveis), com o botão **Remover do projeto**.
+- A ficha mostra o **nível na equipa**: Membro, Responsável ou Administrador (administrador da plataforma).
+- O ícone 🚪 foi retirado. Cada pessoa clica no **seu próprio círculo de iniciais** para abrir o seu perfil, onde aparece o botão **Sair do projeto**.
+- Todos os membros do projeto podem ver o perfil dos outros; só responsáveis e administradores veem o botão **Remover do projeto** (o servidor também recusa a remoção a membros normais).
+- A lista "Tarefas atribuídas" do perfil respeita a visibilidade do quadro: tarefas restritas (ou de colunas restritas) só aparecem a responsáveis do projeto, administradores e aos responsáveis dessa tarefa.
+
+## Sincronização em tempo real de tudo (v25)
+- `src/lib/sync.js`: middleware que observa **todas** as alterações bem-sucedidas a projetos e tarefas (criar/editar/eliminar tarefas, colunas, etiquetas, metas, campos, automações, responsáveis, subtarefas, dependências, visibilidade, membros e papéis…) e emite `projeto:alterado` para a sala do projeto. O cliente (`sincronizarProjeto()` em `board.js`) volta a pedir o quadro — o servidor aplica a visibilidade — e atualiza o quadro, a vista aberta (lista, calendário, Gantt, metas, automações), a lista de membros, os botões conforme as permissões e a tarefa aberta no detalhe. Não é preciso recarregar a página.
+- Uma tarefa que passa a restrita desaparece de imediato para quem deixa de a poder ver; se estava aberta no detalhe, fecha com aviso.
+- Reuniões marcadas/canceladas atualizam a lista dos participantes (`reunioes:alteradas`).
+- O perfil de um membro lista também as tarefas em que é responsável adicional, com a mesma regra de visibilidade.
+
+## Ecrã de entrar/criar conta (v28)
+O texto de apresentação passou para **Sobre o projeto** (`/sobre.html`) como um parágrafo simples, igual aos restantes; "Sincronização em tempo real ativa" e a conta de demonstração foram retiradas. Os ecrãs de entrar, criar conta, esqueci/redefinir password ficam só com o formulário, centrado. O título do login é agora "Trabalhe em equipa, em tempo real — Entre e veja o seu projeto avançar ao vivo.", pensado também para quem visita o site pela primeira vez.
+
+## Espaço de gestão só para responsáveis + reuniões para todos (v29)
+- **Acesso:** o Espaço de gestão (`/workspace.html`) só abre a administradores e a quem é responsável de pelo menos um projeto. Qualquer outra pessoa é reencaminhada **antes** de se desenhar a página, e o servidor devolve 403 em todos os dados. Dentro do Espaço de gestão, um responsável só vê os projetos de que é **responsável** (nunca aqueles em que é só membro).
+- **Reuniões:** as notificações de reunião levam agora ao quadro do projeto (`board.html?projeto=…&reunioes=1`), que abre a janela "Reuniões do projeto" (também disponível para todos no item "🗓️ Reuniões" da barra lateral). Marcar/cancelar continua no Espaço de gestão, só para responsáveis e administradores. Rota nova: `GET /api/projects/:id/reunioes` (qualquer membro).
+- **Perfil do membro:** responsáveis e administradores têm o botão **Tornar responsável** (ou **Retirar como responsável**), com confirmação.
+
+## Convidar vários membros de uma vez (v30)
+Na janela "Convidar membro" cada pessoa tem uma caixa de seleção; há "Selecionar todos", contador, "Limpar" e um botão "Convidar N pessoas". A seleção mantém-se ao pesquisar de novo. Responsáveis/administradores enviam os convites diretamente; um membro comum envia pedidos que os responsáveis têm de aprovar ("Propor convite a N pessoas"). Se alguma falhar, a janela fica aberta a mostrar o motivo de cada uma.
+
+## Responsável por omissão em projetos de um só membro (v31)
+Ao criar uma tarefa num projeto com apenas um membro, esse membro vem pré-selecionado como responsável da tarefa (pode ser alterado). Com vários membros mantém-se "Sem responsável".
+
+## Registo de tempo automático por coluna (v32)
+Aplique `db/migration_v19.sql` (coluna `timer_start` em `board_columns`).
+- **Nunca conta** em colunas concluídas nem em colunas protegidas (restritas): o servidor recusa o início manual, para os cronómetros quando a tarefa entra nelas (ou quando a coluna passa a concluída/protegida) e o botão fica desativado com aviso.
+- **Começa sozinho** (para o responsável da tarefa) quando a tarefa entra — ou é criada — numa coluna marcada com **⏱️ Iniciar o registo de tempo**, opção disponível ao criar/editar a coluna. A coluna fica com o selo ⏱️.
+- **Automação** nova: "⏱️ Iniciar o registo de tempo (ao responsável da tarefa)", só em colunas que não sejam concluídas/protegidas.
+- Sem responsável na tarefa, ou com um cronómetro já a correr noutra tarefa, não inicia (neste último caso a pessoa é notificada).
+- Corrigido: quem criava uma coluna via-a duplicada no ecrã.
+- **Reiniciar (v33):** botão "🔄 Reiniciar" ao lado de "Iniciar" no detalhe da tarefa — apaga o tempo registado e volta a zero e pára o cronómetro (só volta a contar com "Iniciar" ou ao entrar numa coluna que inicia o registo). `POST /api/tasks/:id/tempo/reiniciar`, só para responsáveis da tarefa, do projeto e administradores.
+- Ativar "Iniciar o registo de tempo" numa coluna que já tem tarefas faz essas tarefas (com responsável) começarem a contar logo; mudar o responsável de uma tarefa numa coluna dessas também inicia para o novo responsável.
+- **Relógio ao vivo (v34):** o registo de tempo mostra `hh:mm:ss` e conta segundo a segundo (corrigido pela hora do servidor); fechar e reabrir a tarefa não faz saltos. Numa coluna "Iniciar o registo de tempo" os botões **Iniciar** e **Reiniciar** ficam inativos (o servidor também recusa); **Parar** continua disponível enquanto estiver a contar.
+
+## Pedidos de convite em vários sítios, seleção múltipla e botão Voltar (v35)
+- **Pedidos de convite para aprovar** aparecem agora em três lugares: em "Os meus projetos", no quadro de cada projeto (item "📨 Pedidos de convite" na barra lateral, com contador, para responsáveis/administradores) e no Espaço de gestão (aba "📨 Pedidos de convite").
+- **Seleção múltipla** (`public/js/convites.js`): caixa em cada convite, "Selecionar todos", contador e ações em lote — **Aprovar/Rejeitar selecionados** nos pedidos e **Aceitar/Recusar selecionados** nos convites que recebe. Cada item também tem ✔/✕ individuais.
+- **Botão ← Voltar** (`public/js/voltar.js`) em todas as páginas exceto a inicial: usa o histórico quando veio de outra página do site, senão vai para um destino lógico (quadro → projetos, gestão/administração → projeto de origem, páginas públicas → início). No telefone mostra só a seta.
+
+## Ajustes v36
+- **Login:** o botão "← Voltar" fica por baixo do botão "Entrar" (e de "Criar conta", etc.). Em "Os meus projetos" deixou de haver botão Voltar — só se sai terminando a sessão.
+- **Vista "👥 Equipa"** no quadro do projeto (todos os membros a veem, também no telefone): cartões com nome, nível, e-mail, online/offline e última vez visto; ao clicar abre o perfil. No Espaço de gestão, a aba "Membros" mostra todos os projetos ao administrador e marca como responsável quem tem esse papel no projeto.
+- **Tutoriais e páginas públicas com sessão iniciada:** o cabeçalho mostra "Os meus projetos" em vez de "Entrar / Criar conta" (sem terminar a sessão) e o botão Voltar regressa à app.
+
+## v37 — Lado esquerdo redimensionável e membros mais visíveis
+- A linha que separa o lado esquerdo (barra lateral) do lado direito pode ser **arrastada** para alargar/estreitar a barra (200–520 px). Em todas as páginas com barra lateral.
+- **Duplo clique** na linha (ou tecla Home) repõe a largura original; com a linha em foco, as **setas ←/→** ajustam. A largura fica guardada no aparelho.
+- No telemóvel/tablet (≤900px) a barra continua a deslizar por cima, sem a linha de arrastar.
+- "Membros do projeto" na barra lateral: nome completo (sem cortar), nível (Responsável/Membro), ponto verde online/cinzento offline, contagem "N · X online", online primeiro; atualiza em tempo real. Clicar abre o perfil.
+
+## v38 — Convites nas notificações, páginas públicas com detalhe
+- **Os meus projetos:** a barra lateral já não lista projetos (só Espaço de gestão/Administração e a conta).
+- **Pedidos e convites nas notificações (🔔):** no topo do painel aparecem "Convites recebidos" (Aceitar / Rejeitar / Ver convite) e, para responsáveis e administradores, "Pedidos de convite para aprovar" (Aprovar / Rejeitar / Ver), com seleção múltipla. O contador do sino soma-os.
+- **Sem botão Voltar** em Funcionalidades, Projetos (exemplos), Serviços e Sobre o projeto.
+- **Projetos (exemplos):** cada cartão abre `exemplo.html?id=…` com contexto, equipa, quadro, passo a passo de como foi feito com o GPI Track, funcionalidades usadas, resultados e lições.
+- **Serviços:** 8 serviços; cada cartão abre `servico.html?id=…` com a descrição de como funciona. Conteúdo em `public/js/conteudo-lp.js`.

@@ -64,10 +64,22 @@ async function obterDadosRelatorio() {
   `);
 
   // Agrupar tarefas e membros por projeto
+  // (agrupado uma só vez num Map — antes cada projeto voltava a percorrer a
+  // lista inteira de tarefas, o que cresce com projetos × tarefas)
+  const agrupar = (lista) => {
+    const mapa = new Map();
+    for (const item of lista) {
+      if (!mapa.has(item.project_id)) mapa.set(item.project_id, []);
+      mapa.get(item.project_id).push(item);
+    }
+    return mapa;
+  };
+  const tarefasPorProjeto = agrupar(tarefas);
+  const membrosPorProjeto = agrupar(membros);
   const projetosCompletos = projetos.map((p) => ({
     ...p,
-    tarefas: tarefas.filter((t) => t.project_id === p.id),
-    membros: membros.filter((m) => m.project_id === p.id),
+    tarefas: tarefasPorProjeto.get(p.id) || [],
+    membros: membrosPorProjeto.get(p.id) || [],
   }));
 
   return { projetos: projetosCompletos, utilizadores, geradoEm: new Date() };

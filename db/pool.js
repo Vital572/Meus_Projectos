@@ -25,11 +25,13 @@ const host = url ? hostDaUrl(url) : process.env.PGHOST || "localhost";
 const ehLocal = !host || ["localhost", "127.0.0.1", "::1"].includes(host);
 
 const opcoes = {
-  // Poucas ligações: o plano gratuito do Supabase limita as ligações abertas
-  // ao pooler, e esta aplicação é pequena.
-  max: Number(process.env.PG_POOL_MAX) || 8,
+  // Nº máximo de ligações em simultâneo. No Supabase (Session pooler, plano grátis)
+  // há um limite baixo de ligações — se precisar, ajuste PGPOOL_MAX.
+  max: Number(process.env.PGPOOL_MAX) || 10,
   idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 15000,
+  // Se o pool estiver esgotado, falha ao fim de 15 s com um erro claro em vez de
+  // deixar o pedido pendurado para sempre.
+  connectionTimeoutMillis: Number(process.env.PGPOOL_TIMEOUT_MS) || 15000,
   keepAlive: true,
   ssl: ehLocal ? false : { rejectUnauthorized: false },
 };

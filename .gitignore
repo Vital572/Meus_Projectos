@@ -16,3 +16,7 @@ npm-debug.log*
 Thumbs.db
 .vscode/
 .idea/
+
+# Relatórios gerados pelo teste de carga (npm run carga)
+relatorio-carga-*.md
+relatorio-carga-*.json

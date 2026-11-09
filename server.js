@@ -9,6 +9,7 @@ const compression = require("compression");
 const rateLimit = require("express-rate-limit");
 
 const authRoutes = require("./src/routes/auth");
+const { avisarAlteracoes } = require("./src/lib/sync");
 const projectRoutes = require("./src/routes/projects");
 const taskRoutes = require("./src/routes/tasks");
 const commentRoutes = require("./src/routes/comments");
@@ -89,8 +90,8 @@ app.use(express.static(path.join(__dirname, "public"), {
 }));
 
 app.use("/api/auth", authRoutes);
-app.use("/api/projects", projectRoutes);
-app.use("/api/tasks", taskRoutes);
+app.use("/api/projects", avisarAlteracoes("projects"), projectRoutes);
+app.use("/api/tasks", avisarAlteracoes("tasks"), taskRoutes);
 app.use("/api/comments", commentRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/admin", adminRoutes);

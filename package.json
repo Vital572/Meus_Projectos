@@ -8,7 +8,9 @@
   },
   "scripts": {
     "start": "node server.js",
-    "seed": "node db/seed.js"
+    "seed": "node db/seed.js",
+    "carga": "node db/carga.js",
+    "carga:limpar": "node db/carga.js --limpar"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
@@ -24,10 +26,13 @@
     "node-cron": "^3.0.3",
     "nodemailer": "^6.9.15",
     "otplib": "^12.0.1",
-    "qrcode": "^1.5.4",
     "pdfkit": "^0.19.1",
     "pg": "^8.12.0",
+    "qrcode": "^1.5.4",
     "socket.io": "^4.7.5",
     "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "socket.io-client": "^4.8.4"
   }
 }

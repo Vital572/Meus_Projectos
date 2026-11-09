@@ -79,12 +79,46 @@ async function guardar(pasta, nomeOriginal, buffer, mimetype) {
   return nome;
 }
 
-// Só estes tipos podem abrir "dentro" do navegador (imagens, áudio, vídeo, PDF).
+// Quando o navegador não indica o tipo (ou diz "octet-stream"), deduz-se pela extensão.
+const MIME_POR_EXTENSAO = {
+  ".pdf": "application/pdf", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp",
+  ".txt": "text/plain", ".csv": "text/csv", ".mp3": "audio/mpeg", ".wav": "audio/wav", ".webm": "audio/webm", ".ogg": "audio/ogg", ".m4a": "audio/mp4", ".mp4": "video/mp4",
+  ".doc": "application/msword", ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ".xls": "application/vnd.ms-excel", ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ".ppt": "application/vnd.ms-powerpoint", ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  ".zip": "application/zip", ".rar": "application/vnd.rar", ".json": "application/json",
+};
+function tipoEfetivo(mime, nome) {
+  if (!mime || mime === "application/octet-stream") {
+    return MIME_POR_EXTENSAO[path.extname(nome || "").toLowerCase()] || "application/octet-stream";
+  }
+  return mime;
+}
+
+/** O multer entrega o nome original em latin1; converte para UTF-8 (acentos corretos). */
+function nomeOriginalUtf8(nome) {
+  try {
+    const u = Buffer.from(nome, "latin1").toString("utf8");
+    return u.includes("\uFFFD") ? nome : u;
+  } catch {
+    return nome;
+  }
+}
+
+// Só estes tipos podem abrir "dentro" do navegador (imagens, áudio, vídeo, PDF, texto simples).
 // Tudo o resto — HTML, SVG, scripts… — é sempre descarregado, para que um
 // ficheiro malicioso enviado por um utilizador nunca corra dentro do site.
 function podeAbrirNoNavegador(mime) {
   const t = String(mime || "").split(";")[0].trim().toLowerCase();
-  return (/^(image|audio|video)\//.test(t) && t !== "image/svg+xml") || t === "application/pdf";
+  return (/^(image|audio|video)\//.test(t) && t !== "image/svg+xml") || t === "application/pdf" || t === "text/plain";
+}
+
+// Content-Disposition com o nome original (acentos incluídos) para o ficheiro gravar com o nome certo.
+function disposicao(modo, nome) {
+  const seguro = String(nome || "ficheiro").replace(/[\r\n"]/g, "_");
+  const ascii = seguro.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^\x20-\x7E]/g, "_");
+  const utf8 = encodeURIComponent(seguro).replace(/['()*]/g, (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase());
+  return `${modo}; filename="${ascii}"; filename*=UTF-8''${utf8}`;
 }
 
 /**
@@ -93,19 +127,17 @@ function podeAbrirNoNavegador(mime) {
  * Suporta pedidos "Range" (necessário para o áudio avançar/recuar no Safari).
  */
 async function enviar(req, res, pasta, nome, { nomeDownload, mimetype, comoAnexo = false } = {}) {
-  const abrirDentro = !comoAnexo && podeAbrirNoNavegador(mimetype);
-  const tipo = mimetype || "application/octet-stream";
+  const tipo = tipoEfetivo(mimetype, nomeDownload);
+  const forcarDownload = comoAnexo || req.query?.baixar === "1";
+  const modo = !forcarDownload && podeAbrirNoNavegador(tipo) ? "inline" : "attachment";
 
   if (!usaSupabase) {
     const caminho = path.join(PASTA_LOCAL, pasta, nome);
     if (!fs.existsSync(caminho)) return false;
     res.setHeader("Content-Type", tipo);
     res.setHeader("X-Content-Type-Options", "nosniff");
-    if (abrirDentro) {
-      res.sendFile(caminho);
-    } else {
-      res.download(caminho, nomeDownload || nome);
-    }
+    res.setHeader("Content-Disposition", disposicao(modo, nomeDownload || nome));
+    res.sendFile(caminho); // suporta pedidos "Range"
     return true;
   }
 
@@ -120,13 +152,11 @@ async function enviar(req, res, pasta, nome, { nomeDownload, mimetype, comoAnexo
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("Accept-Ranges", "bytes");
   res.setHeader("Cache-Control", "private, max-age=3600");
+  res.setHeader("Content-Disposition", disposicao(modo, nomeDownload || nome));
   for (const h of ["content-length", "content-range"]) {
     const v = r.headers.get(h);
     if (v) res.setHeader(h, v);
   }
-  if (abrirDentro) res.setHeader("Content-Disposition", "inline");
-  else res.attachment(nomeDownload || nome); // acrescenta Content-Disposition com o nome correto (UTF-8)
-  res.setHeader("Content-Type", tipo); // attachment() mexe no Content-Type; repõe o certo
 
   const corpo = Readable.fromWeb(r.body);
   corpo.on("error", () => res.destroy());
@@ -152,4 +182,4 @@ async function apagarVarios(pasta, nomes) {
   await Promise.allSettled((nomes || []).filter(Boolean).map((n) => apagar(pasta, n)));
 }
 
-module.exports = { PASTAS, iniciar, guardar, enviar, apagar, apagarVarios, usaSupabase };
+module.exports = { PASTAS, iniciar, guardar, enviar, apagar, apagarVarios, nomeOriginalUtf8, usaSupabase };

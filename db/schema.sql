@@ -77,6 +77,7 @@ CREATE TABLE IF NOT EXISTS board_columns (
     position    INTEGER NOT NULL,
     is_done     BOOLEAN NOT NULL DEFAULT false, -- marca esta coluna como "tarefa concluída" (usado nos relatórios/gráficos)
     restricted  BOOLEAN NOT NULL DEFAULT false, -- só responsáveis/administradores veem/gerem esta coluna (ex.: "Em Revisão")
+    timer_start BOOLEAN NOT NULL DEFAULT false, -- as tarefas que entram aqui começam a contar tempo automaticamente (ao responsável)
     UNIQUE (project_id, position)
 );
 
@@ -425,3 +426,60 @@ CREATE TABLE IF NOT EXISTS password_resets (
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS password_resets_user_idx ON password_resets (user_id);
+
+-- ---------- Índices extra (migração v16): ver db/migration_v16.sql ----------
+CREATE INDEX IF NOT EXISTS idx_tasks_assignee            ON tasks(assignee_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_created_by          ON tasks(created_by);
+CREATE INDEX IF NOT EXISTS idx_project_members_user      ON project_members(user_id);
+CREATE INDEX IF NOT EXISTS idx_task_responsibles_user    ON task_responsibles(user_id);
+CREATE INDEX IF NOT EXISTS idx_comments_user             ON comments(user_id);
+CREATE INDEX IF NOT EXISTS idx_activity_user             ON activity_log(user_id);
+CREATE INDEX IF NOT EXISTS idx_channel_messages_user     ON channel_messages(user_id);
+CREATE INDEX IF NOT EXISTS idx_channel_messages_reply    ON channel_messages(reply_to_id);
+CREATE INDEX IF NOT EXISTS idx_channel_reactions_user    ON channel_message_reactions(user_id);
+CREATE INDEX IF NOT EXISTS idx_channel_hidden_user       ON channel_message_hidden(user_id);
+CREATE INDEX IF NOT EXISTS idx_notifications_project     ON notifications(project_id);
+CREATE INDEX IF NOT EXISTS idx_notifications_task        ON notifications(task_id);
+CREATE INDEX IF NOT EXISTS idx_labels_project            ON labels(project_id);
+CREATE INDEX IF NOT EXISTS idx_task_labels_label         ON task_labels(label_id);
+CREATE INDEX IF NOT EXISTS idx_task_custom_values_field  ON task_custom_values(field_id);
+CREATE INDEX IF NOT EXISTS idx_task_dependencies_depends ON task_dependencies(depends_on_task_id);
+CREATE INDEX IF NOT EXISTS idx_goal_tasks_task           ON goal_tasks(task_id);
+CREATE INDEX IF NOT EXISTS idx_task_attachments_project  ON task_attachments(project_id);
+CREATE INDEX IF NOT EXISTS idx_task_attachments_sent_to  ON task_attachments(sent_to);
+CREATE INDEX IF NOT EXISTS idx_automations_trigger       ON automations(trigger_column_id);
+CREATE INDEX IF NOT EXISTS idx_projects_created_by       ON projects(created_by);
+CREATE INDEX IF NOT EXISTS idx_projects_team             ON projects(team_id);
+CREATE INDEX IF NOT EXISTS idx_team_members_user         ON team_members(user_id);
+
+-- v17: fixar mensagens e grupos da conversa
+
+-- Grupos criados por administradores/responsáveis (ex.: grupo de uma tarefa).
+CREATE TABLE IF NOT EXISTS channel_groups (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    project_id  UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    name        VARCHAR(80) NOT NULL,
+    task_id     UUID REFERENCES tasks(id) ON DELETE SET NULL,
+    created_by  UUID REFERENCES users(id) ON DELETE SET NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_channel_groups_project ON channel_groups(project_id);
+CREATE INDEX IF NOT EXISTS idx_channel_groups_task    ON channel_groups(task_id);
+
+CREATE TABLE IF NOT EXISTS channel_group_members (
+    group_id  UUID NOT NULL REFERENCES channel_groups(id) ON DELETE CASCADE,
+    user_id   UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    added_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (group_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_channel_group_members_user ON channel_group_members(user_id);
+
+-- group_id NULL = conversa geral do projeto
+ALTER TABLE channel_messages ADD COLUMN IF NOT EXISTS group_id  UUID REFERENCES channel_groups(id) ON DELETE CASCADE;
+ALTER TABLE channel_messages ADD COLUMN IF NOT EXISTS pinned_at TIMESTAMPTZ;
+ALTER TABLE channel_messages ADD COLUMN IF NOT EXISTS pinned_by UUID REFERENCES users(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_channel_messages_group  ON channel_messages(group_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_channel_messages_pinned ON channel_messages(project_id, pinned_at) WHERE pinned_at IS NOT NULL;
+
+-- v18: responsáveis de grupo
+ALTER TABLE channel_group_members ADD COLUMN IF NOT EXISTS papel VARCHAR(12) NOT NULL DEFAULT 'membro';

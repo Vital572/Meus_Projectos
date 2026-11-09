@@ -208,7 +208,7 @@ async function obterQuadroVisivel(user, id) {
   const souResponsavel = user.role === "admin" || membro.rows[0]?.role === "responsavel";
 
   const colunas = await pool.query(
-    `SELECT id, name, position, is_done, restricted FROM gpitrack.board_columns WHERE project_id = $1 ORDER BY position`,
+    `SELECT id, name, position, is_done, restricted, timer_start FROM gpitrack.board_columns WHERE project_id = $1 ORDER BY position`,
     [id]
   );
   const tarefas = await pool.query(
@@ -263,7 +263,7 @@ async function obterQuadroVisivel(user, id) {
     : colunas.rows.filter((c) => !c.restricted || idsColunasComTarefaVisivel.has(c.id));
 
   const membros = await pool.query(
-    `SELECT u.id, u.name, u.email, u.avatar_color, pm.role
+    `SELECT u.id, u.name, u.email, u.avatar_color, u.last_seen_at, pm.role
      FROM gpitrack.project_members pm
      JOIN gpitrack.users u ON u.id = pm.user_id
      WHERE pm.project_id = $1 AND pm.status = 'ativo'
@@ -368,8 +368,9 @@ router.get("/:id/atividade", async (req, res) => {
 // POST /api/projects/:id/colunas — cria uma nova coluna (apenas dono do projeto ou administrador)
 router.post("/:id/colunas", async (req, res) => {
   const { id } = req.params;
-  const { name, is_done, restricted } = req.body;
+  const { name, is_done, restricted, timer_start } = req.body;
   if (!name) return res.status(400).json({ erro: "O nome da coluna é obrigatório." });
+  if (timer_start && (is_done || restricted)) return res.status(400).json({ erro: "Uma coluna concluída ou protegida não pode iniciar o registo de tempo." });
 
   const autorizado = await ehDonoDoProjetoOuAdmin(req.user, id);
   if (!autorizado) return res.status(403).json({ erro: "Apenas responsáveis do projeto ou um administrador pode gerir colunas." });
@@ -387,9 +388,9 @@ router.post("/:id/colunas", async (req, res) => {
       await client.query(`UPDATE gpitrack.board_columns SET is_done = false WHERE project_id = $1`, [id]);
     }
     const { rows } = await client.query(
-      `INSERT INTO gpitrack.board_columns (project_id, name, position, is_done, restricted) VALUES ($1, $2, $3, $4, $5)
-       RETURNING id, name, position, is_done, restricted`,
-      [id, name, posRows[0].pos, !!is_done, !!restricted]
+      `INSERT INTO gpitrack.board_columns (project_id, name, position, is_done, restricted, timer_start) VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING id, name, position, is_done, restricted, timer_start`,
+      [id, name, posRows[0].pos, !!is_done, !!restricted, !!timer_start]
     );
     await client.query("COMMIT");
 
@@ -409,8 +410,8 @@ router.post("/:id/colunas", async (req, res) => {
 // e/ou restringe o acesso a responsáveis/administradores
 router.patch("/colunas/:columnId", async (req, res) => {
   const { columnId } = req.params;
-  const { name, is_done, restricted } = req.body;
-  if (!name && is_done === undefined && restricted === undefined) {
+  const { name, is_done, restricted, timer_start } = req.body;
+  if (!name && is_done === undefined && restricted === undefined && timer_start === undefined) {
     return res.status(400).json({ erro: "Nada para atualizar." });
   }
 
@@ -433,11 +434,21 @@ router.patch("/colunas/:columnId", async (req, res) => {
       `UPDATE gpitrack.board_columns SET
          name = COALESCE($1, name),
          is_done = COALESCE($2, is_done),
-         restricted = COALESCE($3, restricted)
+         restricted = COALESCE($3, restricted),
+         timer_start = COALESCE($5, timer_start)
        WHERE id = $4
-       RETURNING id, name, position, is_done, restricted`,
-      [name || null, is_done === undefined ? null : is_done, restricted === undefined ? null : restricted, columnId]
+       RETURNING id, name, position, is_done, restricted, timer_start`,
+      [name || null, is_done === undefined ? null : is_done, restricted === undefined ? null : restricted, columnId, timer_start === undefined ? null : timer_start]
     );
+    // Coluna que passa a concluída/protegida: nunca conta tempo (nem inicia sozinho) — para os cronómetros lá a correr
+    if (rows[0].is_done || rows[0].restricted) {
+      if (rows[0].timer_start) await pool.query(`UPDATE gpitrack.board_columns SET timer_start = false WHERE id = $1`, [columnId]);
+      rows[0].timer_start = false;
+      await require("../lib/tempo").pararCronometros(req.app.get("io"), { columnId });
+    } else if (rows[0].timer_start && timer_start === true) {
+      // Acabou de ser ativada: as tarefas que já estão nesta coluna começam a contar
+      await require("../lib/tempo").iniciarTempoDaColuna(req.app.get("io"), columnId);
+    }
 
     const io = req.app.get("io");
     io.to(`project:${projectId}`).emit("column:updated", rows[0]);
@@ -1050,6 +1061,70 @@ router.patch("/:id/membros/:userId/responsavel", async (req, res) => {
   }
 });
 
+// GET /api/projects/:id/reunioes — reuniões do projeto, visíveis a TODOS os membros
+// (é para aqui que as notificações de reunião levam, e não para o Espaço de Gestão,
+// que é só para responsáveis e administradores)
+router.get("/:id/reunioes", async (req, res) => {
+  try {
+    if (!(await ehMembroDoProjeto(req.user, req.params.id))) return res.status(403).json({ erro: "Sem acesso a este projeto." });
+    const { rows } = await pool.query(
+      `SELECT m.id, m.title, m.description, m.scheduled_at, m.location, u.name AS criado_por_nome
+       FROM gpitrack.meetings m
+       LEFT JOIN gpitrack.users u ON u.id = m.created_by
+       WHERE m.project_id = $1
+       ORDER BY m.scheduled_at ASC`,
+      [req.params.id]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: "Erro ao obter as reuniões." });
+  }
+});
+
+// GET /api/projects/:id/membros/:userId/perfil — ficha de um membro dentro do projeto
+// (qualquer membro ativo do projeto ou administrador pode ver; remover é só para responsáveis/administradores)
+router.get("/:id/membros/:userId/perfil", async (req, res) => {
+  const { id: projectId, userId } = req.params;
+  try {
+    const podeVer = await ehMembroDoProjeto(req.user, projectId);
+    const gestor = await ehDonoDoProjetoOuAdmin(req.user, projectId);
+    if (!podeVer) return res.status(403).json({ erro: "Sem permissão para ver este perfil." });
+
+    const { rows } = await pool.query(
+      `SELECT u.id, u.name, u.email, u.avatar_color, u.last_seen_at, u.role AS nivel_plataforma, pm.role
+       FROM gpitrack.project_members pm
+       JOIN gpitrack.users u ON u.id = pm.user_id
+       WHERE pm.project_id = $1 AND pm.user_id = $2 AND pm.status = 'ativo'`,
+      [projectId, userId]
+    );
+    if (rows.length === 0) return res.status(404).json({ erro: "Esta pessoa não é membro ativo do projeto." });
+
+    // Mesmas regras de visibilidade do quadro: tarefas "restritas" (e as de colunas
+    // restritas) só aparecem a responsáveis do projeto/administradores e às pessoas
+    // que são responsáveis dessa tarefa; para os restantes ficam fora da ficha.
+    const { rows: tarefas } = await pool.query(
+      `SELECT t.id, t.title, t.priority, t.due_date, c.name AS coluna, c.is_done
+       FROM gpitrack.tasks t
+       JOIN gpitrack.board_columns c ON c.id = t.column_id
+       WHERE t.project_id = $1
+         AND (t.assignee_id = $2 OR EXISTS (SELECT 1 FROM gpitrack.task_responsibles pr WHERE pr.task_id = t.id AND pr.user_id = $2))
+         AND ($3::boolean
+              OR (t.visibility <> 'restrita' AND NOT c.restricted)
+              OR t.assignee_id = $4
+              OR EXISTS (SELECT 1 FROM gpitrack.task_responsibles tr WHERE tr.task_id = t.id AND tr.user_id = $4))
+       ORDER BY c.is_done, t.due_date NULLS LAST, t.created_at`,
+      [projectId, userId, gestor, req.user.id]
+    );
+    const { utilizadoresOnlineGlobal } = require("../sockets");
+    const online = utilizadoresOnlineGlobal().some((u) => u.id === userId);
+    res.json({ ...rows[0], online, tarefas });
+  } catch (err) {
+    console.error("Erro no perfil do membro:", err);
+    res.status(500).json({ erro: "Erro ao carregar o perfil." });
+  }
+});
+
 // DELETE /api/projects/:id/membros/:userId — remove um membro do projeto
 // (o próprio membro pode sair; o dono do projeto/admin pode remover qualquer um, exceto o dono)
 router.delete("/:id/membros/:userId", async (req, res) => {
@@ -1063,6 +1138,9 @@ router.delete("/:id/membros/:userId", async (req, res) => {
       [projectId, userId]
     );
     if (alvoRows.length === 0) return res.status(404).json({ erro: "Esta pessoa não é membro ativo do projeto." });
+
+    const podeRemover = userId === req.user.id || (await ehDonoDoProjetoOuAdmin(req.user, projectId));
+    if (!podeRemover) return res.status(403).json({ erro: "Sem permissão para remover este membro." });
 
     // Qualquer membro é livre de sair quando quiser (e o dono do projeto ou
     // admin pode remover qualquer outro) — a única exceção é: o projeto tem
@@ -1080,9 +1158,6 @@ router.delete("/:id/membros/:userId", async (req, res) => {
         });
       }
     }
-
-    const podeRemover = userId === req.user.id || (await ehDonoDoProjetoOuAdmin(req.user, projectId));
-    if (!podeRemover) return res.status(403).json({ erro: "Sem permissão para remover este membro." });
 
     await pool.query(
       `DELETE FROM gpitrack.project_members WHERE project_id = $1 AND user_id = $2`,
@@ -1121,15 +1196,45 @@ router.delete("/:id/membros/:userId", async (req, res) => {
 // tarefa) — inspirado no Slack.
 // ============================================================
 
+
+// ---- Grupos da conversa (sub-conversas) -------------------------------
+// group_id NULL = conversa geral do projeto. Mensagens de um grupo só são
+// vistas (e recebidas em tempo real) pelos membros desse grupo.
+async function obterGrupo(groupId) {
+  if (!/^[0-9a-f-]{36}$/i.test(String(groupId || ""))) return null;
+  const { rows } = await pool.query(`SELECT * FROM gpitrack.channel_groups WHERE id = $1`, [groupId]);
+  return rows[0] || null;
+}
+async function ehMembroDoGrupo(userId, groupId) {
+  const { rows } = await pool.query(
+    `SELECT 1 FROM gpitrack.channel_group_members WHERE group_id = $1 AND user_id = $2`, [groupId, userId]);
+  return rows.length > 0;
+}
+// Pode ler/escrever nesta conversa (geral ou grupo)?
+async function podeAcederConversa(user, projectId, groupId) {
+  if (!(await ehMembroDoProjeto(user, projectId))) return false;
+  if (!groupId) return true;
+  return ehMembroDoGrupo(user.id, groupId);
+}
+// Emite um evento só a quem vê a conversa: sala do projeto (geral) ou salas
+// pessoais dos membros do grupo.
+async function emitirCanal(io, projectId, groupId, evento, payload) {
+  if (!groupId) { io.to(`project:${projectId}`).emit(evento, payload); return; }
+  const { rows } = await pool.query(`SELECT user_id FROM gpitrack.channel_group_members WHERE group_id = $1`, [groupId]);
+  for (const r of rows) io.to(`user:${r.user_id}`).emit(evento, payload);
+}
+const MAX_FIXADAS = 10;
+
 // GET /api/projects/:id/mensagens
 router.get("/:id/mensagens", async (req, res) => {
   try {
-    const podeVer = await ehMembroDoProjeto(req.user, req.params.id);
+    const grupoId = req.query.grupo || null;
+    const podeVer = await podeAcederConversa(req.user, req.params.id, grupoId);
     if (!podeVer) return res.status(403).json({ erro: "Sem permissão para ver esta conversa." });
 
     const { rows } = await pool.query(
       `SELECT cm.id, cm.content, cm.type, cm.file_name, cm.file_size, cm.mime_type, cm.duration_seconds,
-              cm.created_at, cm.edited_at, cm.deleted_at, cm.reply_to_id,
+              cm.created_at, cm.edited_at, cm.deleted_at, cm.reply_to_id, cm.group_id, cm.pinned_at,
               u.id AS user_id, u.name AS autor_nome, u.avatar_color,
               rt.autor_nome AS reply_to_autor, rt.preview AS reply_to_preview,
               COALESCE(rc.reacoes, '[]'::json) AS reacoes
@@ -1149,12 +1254,13 @@ router.get("/:id/mensagens", async (req, res) => {
          FROM gpitrack.channel_message_reactions r WHERE r.message_id = cm.id
        ) rc ON true
        WHERE cm.project_id = $1
+         AND cm.group_id IS NOT DISTINCT FROM $3::uuid
          AND NOT EXISTS (
            SELECT 1 FROM gpitrack.channel_message_hidden h WHERE h.message_id = cm.id AND h.user_id = $2
          )
        ORDER BY cm.created_at ASC
        LIMIT 300`,
-      [req.params.id, req.user.id]
+      [req.params.id, req.user.id, grupoId]
     );
     res.json(rows.map(formatarMensagemCanal));
   } catch (err) {
@@ -1171,7 +1277,7 @@ function formatarMensagemCanal(m) {
     return {
       id: m.id, user_id: m.user_id, autor_nome: m.autor_nome, avatar_color: m.avatar_color,
       created_at: m.created_at, type: "texto", content: null, deleted_at: m.deleted_at,
-      edited_at: null, file_name: null, url: null, reply_to_id: null, reply_to_autor: null,
+      edited_at: null, file_name: null, url: null, group_id: m.group_id || null, pinned_at: null, reply_to_id: null, reply_to_autor: null,
       reply_to_preview: null, reacoes: [],
     };
   }
@@ -1181,10 +1287,11 @@ function formatarMensagemCanal(m) {
 // POST /api/projects/:id/mensagens — mensagem de texto
 router.post("/:id/mensagens", async (req, res) => {
   const { content, reply_to_id } = req.body;
+  const grupoId = req.body.grupo_id || null;
   if (!content || !content.trim()) return res.status(400).json({ erro: "A mensagem não pode estar vazia." });
 
   try {
-    const podeEnviar = await ehMembroDoProjeto(req.user, req.params.id);
+    const podeEnviar = await podeAcederConversa(req.user, req.params.id, grupoId);
     if (!podeEnviar) return res.status(403).json({ erro: "Sem permissão para enviar mensagens neste projeto." });
 
     // A resposta só é aceite se apontar para uma mensagem real do mesmo projeto.
@@ -1194,8 +1301,8 @@ router.post("/:id/mensagens", async (req, res) => {
       const { rows: origRows } = await pool.query(
         `SELECT cm.id, cm.content, cm.type, cm.file_name, cm.deleted_at, u.name AS autor_nome
          FROM gpitrack.channel_messages cm JOIN gpitrack.users u ON u.id = cm.user_id
-         WHERE cm.id = $1 AND cm.project_id = $2`,
-        [reply_to_id, req.params.id]
+         WHERE cm.id = $1 AND cm.project_id = $2 AND cm.group_id IS NOT DISTINCT FROM $3::uuid`,
+        [reply_to_id, req.params.id, grupoId]
       );
       if (origRows.length > 0) {
         replyToIdValido = origRows[0].id;
@@ -1207,10 +1314,10 @@ router.post("/:id/mensagens", async (req, res) => {
     }
 
     const { rows } = await pool.query(
-      `INSERT INTO gpitrack.channel_messages (project_id, user_id, content, type, reply_to_id)
-       VALUES ($1, $2, $3, 'texto', $4)
-       RETURNING id, content, type, created_at, reply_to_id`,
-      [req.params.id, req.user.id, content.trim(), replyToIdValido]
+      `INSERT INTO gpitrack.channel_messages (project_id, user_id, content, type, reply_to_id, group_id)
+       VALUES ($1, $2, $3, 'texto', $4, $5)
+       RETURNING id, content, type, created_at, reply_to_id, group_id`,
+      [req.params.id, req.user.id, content.trim(), replyToIdValido, grupoId]
     );
     const mensagem = {
       ...rows[0], user_id: req.user.id, autor_nome: req.user.name, avatar_color: req.user.avatar_color,
@@ -1219,7 +1326,7 @@ router.post("/:id/mensagens", async (req, res) => {
     };
 
     const io = req.app.get("io");
-    io.to(`project:${req.params.id}`).emit("channel:message", mensagem);
+    await emitirCanal(io, req.params.id, grupoId, "channel:message", mensagem);
 
     // Deteta menções simples do tipo @Nome na mensagem do canal (mesma regra
     // usada nos comentários de tarefa: compara com o primeiro nome).
@@ -1227,8 +1334,9 @@ router.post("/:id/mensagens", async (req, res) => {
     if (mencoes.length > 0) {
       const { rows: membros } = await pool.query(
         `SELECT u.id, u.name FROM gpitrack.project_members pm
-         JOIN gpitrack.users u ON u.id = pm.user_id WHERE pm.project_id = $1 AND pm.status = 'ativo'`,
-        [req.params.id]
+         JOIN gpitrack.users u ON u.id = pm.user_id WHERE pm.project_id = $1 AND pm.status = 'ativo'
+           AND ($2::uuid IS NULL OR EXISTS (SELECT 1 FROM gpitrack.channel_group_members g WHERE g.group_id = $2::uuid AND g.user_id = u.id))`,
+        [req.params.id, grupoId]
       );
       const { rows: projRows } = await pool.query(`SELECT name FROM gpitrack.projects WHERE id = $1`, [req.params.id]);
       for (const membro of membros) {
@@ -1255,7 +1363,8 @@ router.post("/:id/mensagens", async (req, res) => {
 router.post("/:id/mensagens/multimedia", uploadCanal.single("ficheiro"), async (req, res) => {
   let nomeGuardado = null;
   try {
-    const podeEnviar = await ehMembroDoProjeto(req.user, req.params.id);
+    const grupoId = req.body.grupo_id || null;
+    const podeEnviar = await podeAcederConversa(req.user, req.params.id, grupoId);
     if (!podeEnviar) {
       return res.status(403).json({ erro: "Sem permissão para enviar mensagens neste projeto." });
     }
@@ -1269,10 +1378,10 @@ router.post("/:id/mensagens/multimedia", uploadCanal.single("ficheiro"), async (
 
     const { rows } = await pool.query(
       `INSERT INTO gpitrack.channel_messages
-         (project_id, user_id, content, type, file_name, stored_name, file_size, mime_type, duration_seconds)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-       RETURNING id, content, type, file_name, file_size, mime_type, duration_seconds, created_at`,
-      [req.params.id, req.user.id, req.body.legenda || null, tipo, req.file.originalname, nomeGuardado, req.file.size, req.file.mimetype, duracao]
+         (project_id, user_id, content, type, file_name, stored_name, file_size, mime_type, duration_seconds, group_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       RETURNING id, content, type, file_name, file_size, mime_type, duration_seconds, created_at, group_id`,
+      [req.params.id, req.user.id, req.body.legenda || null, tipo, storage.nomeOriginalUtf8(req.file.originalname), nomeGuardado, req.file.size, req.file.mimetype, duracao, grupoId]
     );
     const mensagem = {
       ...rows[0], user_id: req.user.id, autor_nome: req.user.name, avatar_color: req.user.avatar_color,
@@ -1280,7 +1389,7 @@ router.post("/:id/mensagens/multimedia", uploadCanal.single("ficheiro"), async (
     };
 
     const io = req.app.get("io");
-    io.to(`project:${req.params.id}`).emit("channel:message", mensagem);
+    await emitirCanal(io, req.params.id, grupoId, "channel:message", mensagem);
 
     res.status(201).json(mensagem);
   } catch (err) {
@@ -1299,12 +1408,13 @@ router.patch("/mensagens/:messageId", async (req, res) => {
 
   try {
     const { rows } = await pool.query(
-      `SELECT id, project_id, user_id, type, deleted_at FROM gpitrack.channel_messages WHERE id = $1`,
+      `SELECT id, project_id, group_id, user_id, type, deleted_at FROM gpitrack.channel_messages WHERE id = $1`,
       [req.params.messageId]
     );
     const msg = rows[0];
     if (!msg) return res.status(404).json({ erro: "Mensagem não encontrada." });
     if (msg.deleted_at) return res.status(400).json({ erro: "Esta mensagem foi eliminada." });
+    if (!(await podeAcederConversa(req.user, msg.project_id, msg.group_id))) return res.status(403).json({ erro: "Sem permissão nesta conversa." });
     if (msg.user_id !== req.user.id) return res.status(403).json({ erro: "Só pode editar as suas próprias mensagens." });
     if (msg.type !== "texto") return res.status(400).json({ erro: "Só mensagens de texto podem ser editadas." });
 
@@ -1315,7 +1425,7 @@ router.patch("/mensagens/:messageId", async (req, res) => {
     );
 
     const io = req.app.get("io");
-    io.to(`project:${msg.project_id}`).emit("channel:message-edited", atualizado[0]);
+    await emitirCanal(io, msg.project_id, msg.group_id, "channel:message-edited", atualizado[0]);
     res.json(atualizado[0]);
   } catch (err) {
     console.error(err);
@@ -1333,11 +1443,12 @@ router.delete("/mensagens/:messageId", async (req, res) => {
 
   try {
     const { rows } = await pool.query(
-      `SELECT id, project_id, user_id, deleted_at, stored_name FROM gpitrack.channel_messages WHERE id = $1`,
+      `SELECT id, project_id, group_id, user_id, deleted_at, stored_name FROM gpitrack.channel_messages WHERE id = $1`,
       [req.params.messageId]
     );
     const msg = rows[0];
     if (!msg) return res.status(404).json({ erro: "Mensagem não encontrada." });
+    if (!(await podeAcederConversa(req.user, msg.project_id, msg.group_id))) return res.status(403).json({ erro: "Sem permissão nesta conversa." });
 
     if (escopo === "todos") {
       if (msg.deleted_at) return res.json({ ok: true });
@@ -1347,18 +1458,16 @@ router.delete("/mensagens/:messageId", async (req, res) => {
         return res.status(403).json({ erro: "Só o autor ou um responsável do projeto pode eliminar esta mensagem para todos." });
       }
       await pool.query(
-        `UPDATE gpitrack.channel_messages SET deleted_at = now(), deleted_by = $1 WHERE id = $2`,
+        `UPDATE gpitrack.channel_messages SET deleted_at = now(), deleted_by = $1, pinned_at = NULL, pinned_by = NULL WHERE id = $2`,
         [req.user.id, msg.id]
       );
       if (msg.stored_name) storage.apagar(PASTA_CANAL_MEDIA, msg.stored_name); // "eliminar para todos" apaga também o ficheiro
       const io = req.app.get("io");
-      io.to(`project:${msg.project_id}`).emit("channel:message-deleted", { id: msg.id, escopo: "todos" });
+      await emitirCanal(io, msg.project_id, msg.group_id, "channel:message-deleted", { id: msg.id, escopo: "todos" });
       return res.json({ ok: true });
     }
 
     // "mim": qualquer membro pode ocultar qualquer mensagem só para si.
-    const podeVer = await ehMembroDoProjeto(req.user, msg.project_id);
-    if (!podeVer) return res.status(403).json({ erro: "Sem permissão nesta conversa." });
     await pool.query(
       `INSERT INTO gpitrack.channel_message_hidden (message_id, user_id) VALUES ($1, $2)
        ON CONFLICT (message_id, user_id) DO NOTHING`,
@@ -1381,14 +1490,14 @@ router.post("/mensagens/:messageId/reacoes", async (req, res) => {
   }
   try {
     const { rows } = await pool.query(
-      `SELECT project_id, deleted_at FROM gpitrack.channel_messages WHERE id = $1`,
+      `SELECT project_id, group_id, deleted_at FROM gpitrack.channel_messages WHERE id = $1`,
       [req.params.messageId]
     );
     const msg = rows[0];
     if (!msg) return res.status(404).json({ erro: "Mensagem não encontrada." });
     if (msg.deleted_at) return res.status(400).json({ erro: "Esta mensagem foi eliminada." });
 
-    const podeVer = await ehMembroDoProjeto(req.user, msg.project_id);
+    const podeVer = await podeAcederConversa(req.user, msg.project_id, msg.group_id);
     if (!podeVer) return res.status(403).json({ erro: "Sem permissão nesta conversa." });
 
     const { rowCount: jaReagiu } = await pool.query(
@@ -1408,7 +1517,7 @@ router.post("/mensagens/:messageId/reacoes", async (req, res) => {
       [req.params.messageId]
     );
     const io = req.app.get("io");
-    io.to(`project:${msg.project_id}`).emit("channel:reaction", { messageId: req.params.messageId, reacoes });
+    await emitirCanal(io, msg.project_id, msg.group_id, "channel:reaction", { messageId: req.params.messageId, reacoes });
     res.json({ reacoes });
   } catch (err) {
     console.error(err);
@@ -1416,17 +1525,274 @@ router.post("/mensagens/:messageId/reacoes", async (req, res) => {
   }
 });
 
+// POST /api/projects/mensagens/eliminar  { ids: [...], escopo: "mim"|"todos" }
+// Eliminação em lote (modo de seleção). Regras:
+//  - "todos": só se TODAS as mensagens selecionadas forem do próprio utilizador.
+//  - "mim": qualquer seleção (próprias, de outros ou mistas).
+router.post("/mensagens/eliminar", async (req, res) => {
+  const ids = Array.isArray(req.body.ids) ? [...new Set(req.body.ids.map(String))].slice(0, 200) : [];
+  const escopo = req.body.escopo === "todos" ? "todos" : "mim";
+  if (ids.length === 0 || !ids.every((i) => /^[0-9a-f-]{36}$/i.test(i))) return res.status(400).json({ erro: "Selecione pelo menos uma mensagem." });
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, project_id, group_id, user_id, deleted_at FROM gpitrack.channel_messages WHERE id = ANY($1::uuid[])`, [ids]);
+    if (rows.length === 0) return res.status(404).json({ erro: "Mensagens não encontradas." });
+    for (const m of rows) {
+      if (!(await podeAcederConversa(req.user, m.project_id, m.group_id))) return res.status(403).json({ erro: "Sem permissão nesta conversa." });
+    }
+    if (escopo === "todos") {
+      if (rows.some((m) => m.user_id !== req.user.id)) {
+        return res.status(403).json({ erro: "\"Eliminar para todos\" só é possível quando todas as mensagens selecionadas são suas." });
+      }
+      const io = req.app.get("io");
+      const aEliminar = rows.filter((m) => !m.deleted_at);
+      if (aEliminar.length) {
+        await pool.query(
+          `UPDATE gpitrack.channel_messages SET deleted_at = now(), deleted_by = $1, pinned_at = NULL, pinned_by = NULL WHERE id = ANY($2::uuid[])`,
+          [req.user.id, aEliminar.map((m) => m.id)]);
+        for (const m of aEliminar) await emitirCanal(io, m.project_id, m.group_id, "channel:message-deleted", { id: m.id, escopo: "todos" });
+      }
+    } else {
+      await pool.query(
+        `INSERT INTO gpitrack.channel_message_hidden (message_id, user_id)
+         SELECT unnest($1::uuid[]), $2 ON CONFLICT (message_id, user_id) DO NOTHING`, [rows.map((m) => m.id), req.user.id]);
+    }
+    res.json({ ok: true, total: rows.length });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: "Erro ao eliminar as mensagens." });
+  }
+});
+
+// POST /api/projects/mensagens/:messageId/fixar — alterna fixar/desafixar.
+// Só responsáveis do projeto/administradores. Máximo de MAX_FIXADAS por conversa.
+router.post("/mensagens/:messageId/fixar", async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, project_id, group_id, deleted_at, pinned_at FROM gpitrack.channel_messages WHERE id = $1`, [req.params.messageId]);
+    const msg = rows[0];
+    if (!msg) return res.status(404).json({ erro: "Mensagem não encontrada." });
+    if (msg.deleted_at) return res.status(400).json({ erro: "Esta mensagem foi eliminada." });
+    if (!(await podeAcederConversa(req.user, msg.project_id, msg.group_id))) return res.status(403).json({ erro: "Sem permissão nesta conversa." });
+    if (!(await ehDonoDoProjetoOuAdmin(req.user, msg.project_id))) return res.status(403).json({ erro: "Só os responsáveis do projeto podem fixar mensagens." });
+
+    let payload;
+    if (msg.pinned_at) {
+      await pool.query(`UPDATE gpitrack.channel_messages SET pinned_at = NULL, pinned_by = NULL WHERE id = $1`, [msg.id]);
+      payload = { id: msg.id, group_id: msg.group_id, pinned_at: null, pinned_by_nome: null };
+    } else {
+      const { rows: c } = await pool.query(
+        `SELECT count(*)::int AS n FROM gpitrack.channel_messages
+         WHERE project_id = $1 AND group_id IS NOT DISTINCT FROM $2::uuid AND pinned_at IS NOT NULL AND deleted_at IS NULL`,
+        [msg.project_id, msg.group_id]);
+      if (c[0].n >= MAX_FIXADAS) return res.status(400).json({ erro: `Já existem ${MAX_FIXADAS} mensagens fixadas. Desafixe uma primeiro.` });
+      const { rows: u } = await pool.query(
+        `UPDATE gpitrack.channel_messages SET pinned_at = now(), pinned_by = $1 WHERE id = $2 RETURNING pinned_at`, [req.user.id, msg.id]);
+      payload = { id: msg.id, group_id: msg.group_id, pinned_at: u[0].pinned_at, pinned_by_nome: req.user.name };
+    }
+    await emitirCanal(req.app.get("io"), msg.project_id, msg.group_id, "channel:pin", payload);
+    res.json(payload);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: "Erro ao fixar a mensagem." });
+  }
+});
+
+// ---- Grupos: CRUD e membros ------------------------------------------
+// GET /api/projects/:id/grupos — grupos onde estou; gestores veem todos
+// (com sou_membro para poderem "entrar").
+router.get("/:id/grupos", async (req, res) => {
+  try {
+    if (!(await ehMembroDoProjeto(req.user, req.params.id))) return res.status(403).json({ erro: "Sem permissão." });
+    const gestor = await ehDonoDoProjetoOuAdmin(req.user, req.params.id);
+    const { rows } = await pool.query(
+      `SELECT g.id, g.name, g.task_id, g.created_by, g.created_at, t.title AS task_title,
+              (SELECT count(*)::int FROM gpitrack.channel_group_members x WHERE x.group_id = g.id) AS total_membros,
+              EXISTS (SELECT 1 FROM gpitrack.channel_group_members m WHERE m.group_id = g.id AND m.user_id = $2) AS sou_membro,
+              EXISTS (SELECT 1 FROM gpitrack.channel_group_members m WHERE m.group_id = g.id AND m.user_id = $2 AND m.papel = 'responsavel') AS sou_resp_grupo
+       FROM gpitrack.channel_groups g LEFT JOIN gpitrack.tasks t ON t.id = g.task_id
+       WHERE g.project_id = $1
+         AND ($3 OR EXISTS (SELECT 1 FROM gpitrack.channel_group_members m WHERE m.group_id = g.id AND m.user_id = $2))
+       ORDER BY g.created_at`, [req.params.id, req.user.id, gestor]);
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: "Erro ao obter os grupos." });
+  }
+});
+
+async function membrosAtivosValidos(projectId, userIds) {
+  if (!userIds.length) return [];
+  const { rows } = await pool.query(
+    `SELECT user_id FROM gpitrack.project_members WHERE project_id = $1 AND status = 'ativo' AND user_id = ANY($2::uuid[])`,
+    [projectId, userIds]);
+  return rows.map((r) => r.user_id);
+}
+async function avisarGrupo(io, grupo, userIds, autor) {
+  const { rows } = await pool.query(`SELECT name FROM gpitrack.projects WHERE id = $1`, [grupo.project_id]);
+  for (const uid of userIds) {
+    if (uid === autor.id) continue;
+    await notificar(io, { userId: uid, type: "channel.group", content: `${autor.name} adicionou-o(a) ao grupo "${grupo.name}" do projeto "${rows[0]?.name}".`, projectId: grupo.project_id });
+    io.to(`user:${uid}`).emit("channel:group-changed", { projectId: grupo.project_id });
+  }
+}
+
+// POST /api/projects/:id/grupos { name, task_id?, member_ids? }
+router.post("/:id/grupos", async (req, res) => {
+  const name = (req.body.name || "").trim().slice(0, 80);
+  if (!name) return res.status(400).json({ erro: "O nome do grupo é obrigatório." });
+  try {
+    if (!(await ehDonoDoProjetoOuAdmin(req.user, req.params.id))) return res.status(403).json({ erro: "Só administradores e responsáveis do projeto podem criar grupos." });
+    let taskId = req.body.task_id || null;
+    let extra = [];
+    if (taskId) {
+      const { rows: t } = await pool.query(
+        `SELECT id, assignee_id, created_by FROM gpitrack.tasks WHERE id = $1 AND project_id = $2`, [taskId, req.params.id]);
+      if (!t[0]) return res.status(400).json({ erro: "Tarefa inválida." });
+      const { rows: r } = await pool.query(`SELECT user_id FROM gpitrack.task_responsibles WHERE task_id = $1`, [taskId]);
+      extra = [t[0].assignee_id, ...r.map((x) => x.user_id)].filter(Boolean);
+    }
+    const pedidos = [...new Set([...(Array.isArray(req.body.member_ids) ? req.body.member_ids : []), ...extra])];
+    const validos = await membrosAtivosValidos(req.params.id, pedidos);
+    const membros = [...new Set([req.user.id, ...validos])];
+    // Responsáveis do grupo: têm de ser membros; o criador é sempre responsável.
+    const pedidosResp = Array.isArray(req.body.responsavel_ids) ? req.body.responsavel_ids : [];
+    const responsaveis = [...new Set([req.user.id, ...pedidosResp.filter((u) => membros.includes(u))])];
+
+    const { rows } = await pool.query(
+      `INSERT INTO gpitrack.channel_groups (project_id, name, task_id, created_by) VALUES ($1,$2,$3,$4) RETURNING *`,
+      [req.params.id, name, taskId, req.user.id]);
+    await pool.query(
+      `INSERT INTO gpitrack.channel_group_members (group_id, user_id, papel)
+       SELECT $1, u, CASE WHEN u = ANY($3::uuid[]) THEN 'responsavel' ELSE 'membro' END FROM unnest($2::uuid[]) u ON CONFLICT DO NOTHING`,
+      [rows[0].id, membros, responsaveis]);
+    const io = req.app.get("io");
+    await avisarGrupo(io, rows[0], membros, req.user);
+    io.to(`user:${req.user.id}`).emit("channel:group-changed", { projectId: req.params.id });
+    res.status(201).json({ ...rows[0], total_membros: membros.length, sou_membro: true, sou_resp_grupo: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: "Erro ao criar o grupo." });
+  }
+});
+
+async function carregarGrupoGestor(req, res) {
+  const g = await obterGrupo(req.params.groupId);
+  if (!g) { res.status(404).json({ erro: "Grupo não encontrado." }); return null; }
+  const gestor = await ehDonoDoProjetoOuAdmin(req.user, g.project_id);
+  if (!gestor) {
+    const { rows } = await pool.query(
+      `SELECT 1 FROM gpitrack.channel_group_members WHERE group_id = $1 AND user_id = $2 AND papel = 'responsavel'`, [g.id, req.user.id]);
+    if (rows.length === 0) { res.status(403).json({ erro: "Só administradores, responsáveis do projeto e responsáveis do grupo podem gerir grupos." }); return null; }
+    req.souGestorProjeto = false;
+  } else req.souGestorProjeto = true;
+  return g;
+}
+
+// PUT /api/projects/grupos/:groupId { name }
+router.put("/grupos/:groupId", async (req, res) => {
+  try {
+    const g = await carregarGrupoGestor(req, res); if (!g) return;
+    const name = (req.body.name || "").trim().slice(0, 80);
+    if (!name) return res.status(400).json({ erro: "O nome do grupo é obrigatório." });
+    await pool.query(`UPDATE gpitrack.channel_groups SET name = $1 WHERE id = $2`, [name, g.id]);
+    const { rows } = await pool.query(`SELECT user_id FROM gpitrack.channel_group_members WHERE group_id = $1`, [g.id]);
+    const io = req.app.get("io");
+    rows.forEach((r) => io.to(`user:${r.user_id}`).emit("channel:group-changed", { projectId: g.project_id }));
+    res.json({ ok: true });
+  } catch (err) { console.error(err); res.status(500).json({ erro: "Erro ao renomear o grupo." }); }
+});
+
+// DELETE /api/projects/grupos/:groupId — apaga o grupo e as suas mensagens
+router.delete("/grupos/:groupId", async (req, res) => {
+  try {
+    const g = await carregarGrupoGestor(req, res); if (!g) return;
+    const { rows } = await pool.query(`SELECT user_id FROM gpitrack.channel_group_members WHERE group_id = $1`, [g.id]);
+    // Ficheiros/áudio das mensagens do grupo (a BD apaga as mensagens em cascata; os ficheiros apagam-se a seguir).
+    const { rows: ficheirosGrupo } = await pool.query(
+      `SELECT stored_name FROM gpitrack.channel_messages WHERE group_id = $1 AND stored_name IS NOT NULL`, [g.id]);
+    await pool.query(`DELETE FROM gpitrack.channel_groups WHERE id = $1`, [g.id]);
+    storage.apagarVarios(PASTA_CANAL_MEDIA, ficheirosGrupo.map((f) => f.stored_name));
+    const io = req.app.get("io");
+    rows.forEach((r) => io.to(`user:${r.user_id}`).emit("channel:group-changed", { projectId: g.project_id, removido: g.id }));
+    res.json({ ok: true });
+  } catch (err) { console.error(err); res.status(500).json({ erro: "Erro ao eliminar o grupo." }); }
+});
+
+// GET /api/projects/grupos/:groupId/membros — membros + candidatos (gestores)
+router.get("/grupos/:groupId/membros", async (req, res) => {
+  try {
+    const g = await obterGrupo(req.params.groupId);
+    if (!g) return res.status(404).json({ erro: "Grupo não encontrado." });
+    let gestor = await ehDonoDoProjetoOuAdmin(req.user, g.project_id);
+    if (!gestor && !(await ehMembroDoGrupo(req.user.id, g.id))) return res.status(403).json({ erro: "Sem permissão." });
+    if (!gestor) {
+      const { rows: r } = await pool.query(`SELECT 1 FROM gpitrack.channel_group_members WHERE group_id=$1 AND user_id=$2 AND papel='responsavel'`, [g.id, req.user.id]);
+      gestor = r.length > 0;
+    }
+    const { rows } = await pool.query(
+      `SELECT u.id, u.name, u.avatar_color, (gm.user_id IS NOT NULL) AS no_grupo, COALESCE(gm.papel = 'responsavel', false) AS resp
+       FROM gpitrack.project_members pm JOIN gpitrack.users u ON u.id = pm.user_id
+       LEFT JOIN gpitrack.channel_group_members gm ON gm.group_id = $2 AND gm.user_id = u.id
+       WHERE pm.project_id = $1 AND pm.status = 'ativo' ORDER BY u.name`, [g.project_id, g.id]);
+    res.json({ grupo: g, gestor, membros: gestor ? rows : rows.filter((r) => r.no_grupo) });
+  } catch (err) { console.error(err); res.status(500).json({ erro: "Erro ao obter os membros." }); }
+});
+
+// PUT /api/projects/grupos/:groupId/membros { member_ids } — define a lista completa
+router.put("/grupos/:groupId/membros", async (req, res) => {
+  try {
+    const g = await carregarGrupoGestor(req, res); if (!g) return;
+    const pedidos = Array.isArray(req.body.member_ids) ? req.body.member_ids : [];
+    const validos = await membrosAtivosValidos(g.project_id, pedidos);
+    const novos = [...new Set([req.user.id, ...validos])];
+    const respPedidos = (Array.isArray(req.body.responsavel_ids) ? req.body.responsavel_ids : []).filter((u) => novos.includes(u));
+    const { rows: antes } = await pool.query(`SELECT user_id FROM gpitrack.channel_group_members WHERE group_id = $1`, [g.id]);
+    const idsAntes = antes.map((r) => r.user_id);
+    await pool.query(`DELETE FROM gpitrack.channel_group_members WHERE group_id = $1 AND user_id <> ALL($2::uuid[])`, [g.id, novos]);
+    await pool.query(`INSERT INTO gpitrack.channel_group_members (group_id, user_id) SELECT $1, unnest($2::uuid[]) ON CONFLICT DO NOTHING`, [g.id, novos]);
+    // Quem edita nunca perde o próprio papel de gestão por engano.
+    const respFinal = [...new Set([...respPedidos, ...(req.souGestorProjeto ? [] : [req.user.id])])];
+    await pool.query(`UPDATE gpitrack.channel_group_members SET papel = CASE WHEN user_id = ANY($2::uuid[]) THEN 'responsavel' ELSE 'membro' END WHERE group_id = $1`, [g.id, respFinal]);
+    const io = req.app.get("io");
+    await avisarGrupo(io, g, novos.filter((u) => !idsAntes.includes(u)), req.user);
+    [...new Set([...idsAntes, ...novos])].forEach((u) => io.to(`user:${u}`).emit("channel:group-changed", { projectId: g.project_id, removido: novos.includes(u) ? undefined : g.id }));
+    res.json({ ok: true, total: novos.length });
+  } catch (err) { console.error(err); res.status(500).json({ erro: "Erro ao atualizar os membros." }); }
+});
+
+// POST /api/projects/grupos/:groupId/entrar — gestor entra num grupo existente
+router.post("/grupos/:groupId/entrar", async (req, res) => {
+  try {
+    const g = await carregarGrupoGestor(req, res); if (!g) return;
+    await pool.query(`INSERT INTO gpitrack.channel_group_members (group_id, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [g.id, req.user.id]);
+    req.app.get("io").to(`user:${req.user.id}`).emit("channel:group-changed", { projectId: g.project_id });
+    res.json({ ok: true });
+  } catch (err) { console.error(err); res.status(500).json({ erro: "Erro ao entrar no grupo." }); }
+});
+
+// POST /api/projects/grupos/:groupId/sair — qualquer membro pode sair
+router.post("/grupos/:groupId/sair", async (req, res) => {
+  try {
+    const g = await obterGrupo(req.params.groupId);
+    if (!g) return res.status(404).json({ erro: "Grupo não encontrado." });
+    await pool.query(`DELETE FROM gpitrack.channel_group_members WHERE group_id = $1 AND user_id = $2`, [g.id, req.user.id]);
+    req.app.get("io").to(`user:${req.user.id}`).emit("channel:group-changed", { projectId: g.project_id, removido: g.id });
+    res.json({ ok: true });
+  } catch (err) { console.error(err); res.status(500).json({ erro: "Erro ao sair do grupo." }); }
+});
+
 // GET /api/projects/mensagens/:messageId/ficheiro — descarrega/reproduz o media de uma mensagem
 router.get("/mensagens/:messageId/ficheiro", async (req, res) => {
   try {
     const { rows } = await pool.query(
-      `SELECT project_id, file_name, stored_name, mime_type, deleted_at FROM gpitrack.channel_messages WHERE id = $1`,
+      `SELECT project_id, group_id, file_name, stored_name, mime_type, deleted_at FROM gpitrack.channel_messages WHERE id = $1`,
       [req.params.messageId]
     );
     const msg = rows[0];
     if (!msg || !msg.stored_name || msg.deleted_at) return res.status(404).json({ erro: "Ficheiro não encontrado." });
 
-    const podeVer = await ehMembroDoProjeto(req.user, msg.project_id);
+    const podeVer = await podeAcederConversa(req.user, msg.project_id, msg.group_id);
     if (!podeVer) return res.status(403).json({ erro: "Sem permissão para aceder a este ficheiro." });
 
     const enviado = await storage.enviar(req, res, PASTA_CANAL_MEDIA, msg.stored_name, {
@@ -1473,7 +1839,7 @@ router.get("/:id/automacoes", async (req, res) => {
 router.post("/:id/automacoes", async (req, res) => {
   const { name, trigger_column_id, action_type, notify_user_id, assign_user_id, set_priority } = req.body;
   if (!name || !trigger_column_id) return res.status(400).json({ erro: "Nome e coluna de gatilho são obrigatórios." });
-  const tipo = ["notificar", "atribuir", "definir_prioridade", "concluir_checklist"].includes(action_type) ? action_type : "notificar";
+  const tipo = ["notificar", "atribuir", "definir_prioridade", "concluir_checklist", "iniciar_tempo"].includes(action_type) ? action_type : "notificar";
   if (tipo === "atribuir" && !assign_user_id) return res.status(400).json({ erro: "Escolha a quem atribuir a tarefa." });
   if (tipo === "definir_prioridade" && !["alta", "media", "baixa"].includes(set_priority)) {
     return res.status(400).json({ erro: "Escolha uma prioridade válida." });
@@ -1482,6 +1848,11 @@ router.post("/:id/automacoes", async (req, res) => {
   try {
     const podeCriar = await ehDonoDoProjetoOuAdmin(req.user, req.params.id);
     if (!podeCriar) return res.status(403).json({ erro: "Só o responsável do projeto pode criar automações." });
+    if (tipo === "iniciar_tempo") {
+      const { rows: col } = await pool.query(`SELECT is_done, restricted FROM gpitrack.board_columns WHERE id = $1 AND project_id = $2`, [trigger_column_id, req.params.id]);
+      if (!col[0]) return res.status(404).json({ erro: "Coluna não encontrada." });
+      if (col[0].is_done || col[0].restricted) return res.status(400).json({ erro: "O registo de tempo não conta em colunas protegidas nem em colunas concluídas." });
+    }
 
     const { rows } = await pool.query(
       `INSERT INTO gpitrack.automations (project_id, name, trigger_column_id, action_type, notify_user_id, assign_user_id, set_priority, created_by)

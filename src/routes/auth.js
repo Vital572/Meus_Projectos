@@ -42,8 +42,6 @@ const router = express.Router();
 router.get("/config", (req, res) => {
   res.json({
     googleClientId: GOOGLE_CLIENT_ID,
-    // A "conta de demonstração" só se mostra em desenvolvimento (MOSTRAR_CONTA_DEMO=true).
-    mostrarContaDemo: process.env.MOSTRAR_CONTA_DEMO === "true",
   });
 });
 

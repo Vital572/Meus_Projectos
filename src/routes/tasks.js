@@ -7,6 +7,7 @@ const { notificar } = require("../lib/notify");
 const storage = require("../lib/storage");
 
 const router = express.Router();
+const tempoLib = require("../lib/tempo");
 router.use(autenticar);
 
 // ------------------------------------------------------------
@@ -61,7 +62,20 @@ router.post("/", async (req, res) => {
   }
   const visibilidade = visibility === "restrita" ? "restrita" : "equipa";
 
+  // Só responsáveis do projeto e administradores criam tarefas.
+  try {
+    if (!(await ehDonoDoProjetoOuAdmin(req.user, project_id))) {
+      return res.status(403).json({ erro: "Só responsáveis do projeto ou administradores podem criar tarefas." });
+    }
+  } catch (e) { return res.status(400).json({ erro: "Projeto inválido." }); }
+
   const client = await pool.connect();
+  // A ligação tem de ser libertada ANTES de qualquer trabalho que use outra
+  // ligação do pool (notificações, etc.). Se cada pedido segurasse uma ligação
+  // e pedisse outra, com 10 pedidos em simultâneo o pool esgotava-se e o
+  // servidor ficava preso para sempre (descoberto no teste de carga).
+  let libertada = false;
+  const libertar = () => { if (!libertada) { libertada = true; client.release(); } };
   try {
     await client.query("BEGIN");
     const { rows: posRows } = await client.query(
@@ -78,9 +92,12 @@ router.post("/", async (req, res) => {
     const task = rows[0];
     await registarAtividade(client, project_id, req.user.id, "task.created", { taskId: task.id, title });
     await client.query("COMMIT");
+    libertar();
 
     const io = req.app.get("io");
     emitirParaTarefa(io, task, "task:created", { task, autor: req.user.name, autorId: req.user.id });
+    // Criada diretamente numa coluna que inicia o registo de tempo
+    await tempoLib.iniciarTempoAutomatico(io, task.id).catch((e) => console.error("[tempo]", e.message));
 
     if (assignee_id && assignee_id !== req.user.id) {
       await notificar(io, {
@@ -94,11 +111,11 @@ router.post("/", async (req, res) => {
 
     res.status(201).json(task);
   } catch (err) {
-    await client.query("ROLLBACK");
+    if (!libertada) await client.query("ROLLBACK").catch(() => {});
     console.error(err);
     res.status(500).json({ erro: "Erro ao criar tarefa." });
   } finally {
-    client.release();
+    libertar();
   }
 });
 
@@ -142,6 +159,7 @@ router.patch("/:id", async (req, res) => {
 
     const io = req.app.get("io");
     emitirParaTarefa(io, task, "task:updated", { task, autor: req.user.name, autorId: req.user.id });
+    if (req.body.assignee_id && req.body.assignee_id !== tarefaAtual.assignee_id) await tempoLib.iniciarTempoAutomatico(io, task.id).catch((e) => console.error("[tempo]", e.message));
 
     if (req.body.assignee_id && req.body.assignee_id !== req.user.id) {
       const { notificar } = require("../lib/notify");
@@ -197,6 +215,12 @@ router.patch("/:id/mover", async (req, res) => {
     const io = req.app.get("io");
     emitirParaTarefa(io, task, "task:moved", { task, autor: req.user.name, autorId: req.user.id });
 
+    // Registo de tempo: em coluna concluída/protegida nunca conta (para o que estiver a correr);
+    // numa coluna marcada como "inicia o registo de tempo" começa sozinho para o responsável.
+    const colDestino = await tempoLib.colunaDaTarefa(task.id);
+    if (tempoLib.colunaBloqueada(colDestino)) await tempoLib.pararCronometros(io, { taskId: task.id });
+    else await tempoLib.iniciarTempoAutomatico(io, task.id);
+
     // Automações simples: "quando uma tarefa entra nesta coluna, notifica X"
     await executarAutomacoes(io, task, req.user);
 
@@ -232,6 +256,8 @@ async function executarAutomacoes(io, task, autor) {
     } else if (regra.action_type === "definir_prioridade" && regra.set_priority) {
       await pool.query(`UPDATE gpitrack.tasks SET priority = $1 WHERE id = $2`, [regra.set_priority, task.id]);
       io.to(`project:${task.project_id}`).emit("task:updated", { task: { ...task, priority: regra.set_priority } });
+    } else if (regra.action_type === "iniciar_tempo") {
+      await tempoLib.iniciarTempoAutomatico(io, task.id, { forcar: true });
     } else if (regra.action_type === "concluir_checklist") {
       await pool.query(`UPDATE gpitrack.checklist_items SET is_done = true WHERE task_id = $1`, [task.id]);
       io.to(`project:${task.project_id}`).emit("checklist:auto-concluida", { taskId: task.id });
@@ -294,7 +320,16 @@ router.delete("/:id", async (req, res) => {
 router.put("/:id/etiquetas", async (req, res) => {
   const { id } = req.params;
   const { label_ids } = req.body; // array de UUIDs
+  {
+    const t = await obterTarefa(id);
+    if (!t) return res.status(404).json({ erro: "Tarefa não encontrada." });
+    if (!(await ehDonoDoProjetoOuAdmin(req.user, t.project_id))) {
+      return res.status(403).json({ erro: "Só responsáveis do projeto ou administradores podem atribuir etiquetas." });
+    }
+  }
   const client = await pool.connect();
+  let libertada = false;
+  const libertar = () => { if (!libertada) { libertada = true; client.release(); } };
   try {
     await client.query("BEGIN");
     await client.query(`DELETE FROM gpitrack.task_labels WHERE task_id = $1`, [id]);
@@ -306,6 +341,7 @@ router.put("/:id/etiquetas", async (req, res) => {
     }
     const { rows: taskRows } = await client.query(`SELECT project_id FROM gpitrack.tasks WHERE id = $1`, [id]);
     await client.query("COMMIT");
+    libertar();
 
     const { rows: labelRows } = await pool.query(
       `SELECT l.id, l.name, l.color FROM gpitrack.task_labels tl
@@ -318,11 +354,11 @@ router.put("/:id/etiquetas", async (req, res) => {
 
     res.json(labelRows);
   } catch (err) {
-    await client.query("ROLLBACK");
+    if (!libertada) await client.query("ROLLBACK").catch(() => {});
     console.error(err);
     res.status(500).json({ erro: "Erro ao atualizar etiquetas." });
   } finally {
-    client.release();
+    libertar();
   }
 });
 
@@ -500,7 +536,7 @@ router.post("/:id/anexos", upload.single("ficheiro"), async (req, res) => {
          (task_id, project_id, uploaded_by, sent_to, file_name, stored_name, file_size, mime_type)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        RETURNING id, file_name, file_size, mime_type, created_at`,
-      [req.params.id, tarefa.project_id, req.user.id, responsavelPrincipal, req.file.originalname, nomeGuardado, req.file.size, req.file.mimetype]
+      [req.params.id, tarefa.project_id, req.user.id, responsavelPrincipal, storage.nomeOriginalUtf8(req.file.originalname), nomeGuardado, req.file.size, req.file.mimetype]
     );
     const anexo = { ...rows[0], enviado_por_nome: req.user.name, enviado_para_nome: null };
 
@@ -717,8 +753,8 @@ router.post("/:id/subtarefas", async (req, res) => {
   try {
     const tarefa = await obterTarefa(req.params.id);
     if (!tarefa) return res.status(404).json({ erro: "Tarefa não encontrada." });
-    if (!(await podeInteragirComTarefa(req.user, tarefa))) {
-      return res.status(403).json({ erro: "Só quem é responsável por esta tarefa pode adicionar subtarefas." });
+    if (!(await ehDonoDoProjetoOuAdmin(req.user, tarefa.project_id))) {
+      return res.status(403).json({ erro: "Só responsáveis do projeto ou administradores podem criar subtarefas." });
     }
     const { rows: posRows } = await pool.query(
       `SELECT COALESCE(MAX(position), -1) + 1 AS pos FROM gpitrack.tasks WHERE column_id = $1`,
@@ -771,8 +807,8 @@ router.post("/:id/dependencias", async (req, res) => {
   try {
     const tarefa = await obterTarefa(req.params.id);
     if (!tarefa) return res.status(404).json({ erro: "Tarefa não encontrada." });
-    if (!(await podeInteragirComTarefa(req.user, tarefa))) {
-      return res.status(403).json({ erro: "Só quem é responsável por esta tarefa pode definir dependências." });
+    if (!(await ehDonoDoProjetoOuAdmin(req.user, tarefa.project_id))) {
+      return res.status(403).json({ erro: "Só responsáveis do projeto ou administradores podem definir dependências." });
     }
     await pool.query(
       `INSERT INTO gpitrack.task_dependencies (task_id, depends_on_task_id, created_by)
@@ -826,7 +862,11 @@ router.get("/:id/tempo", async (req, res) => {
       [req.params.id]
     );
     const total = rows.reduce((soma, r) => soma + (r.seconds || (r.ended_at ? 0 : Math.floor((Date.now() - new Date(r.started_at)) / 1000))), 0);
-    res.json({ entradas: rows, total_segundos: total, a_correr: rows.find((r) => !r.ended_at && r.user_id === req.user.id) || null });
+    res.json({
+      entradas: rows, total_segundos: total, agora: Date.now(),
+      a_correr: rows.find((r) => !r.ended_at && r.user_id === req.user.id) || null,
+      a_correr_todos: rows.filter((r) => !r.ended_at).map((r) => ({ user_id: r.user_id, started_at: r.started_at })),
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ erro: "Erro ao obter o registo de tempo." });
@@ -841,6 +881,9 @@ router.post("/:id/tempo/iniciar", async (req, res) => {
     if (!(await podeInteragirComTarefa(req.user, tarefa))) {
       return res.status(403).json({ erro: "Só quem é responsável por esta tarefa pode registar tempo nela." });
     }
+    const colTempo = await tempoLib.colunaDaTarefa(req.params.id);
+    if (tempoLib.colunaBloqueada(colTempo)) return res.status(400).json({ erro: tempoLib.MSG_BLOQUEADA });
+    if (colTempo && colTempo.timer_start) return res.status(400).json({ erro: tempoLib.MSG_AUTOMATICA });
     const { rows } = await pool.query(
       `INSERT INTO gpitrack.time_entries (task_id, user_id, started_at) VALUES ($1, $2, now())
        RETURNING id, started_at`,
@@ -851,6 +894,28 @@ router.post("/:id/tempo/iniciar", async (req, res) => {
     if (err.code === "23505") return res.status(409).json({ erro: "Já tem um cronómetro a correr noutra tarefa. Pare-o primeiro." });
     console.error(err);
     res.status(500).json({ erro: "Erro ao iniciar o cronómetro." });
+  }
+});
+
+// POST /api/tasks/:id/tempo/reiniciar — volta o registo de tempo da tarefa a zero
+// (apaga os registos e pára o cronómetro; só volta a contar com "Iniciar" ou ao entrar numa coluna que inicia o registo)
+router.post("/:id/tempo/reiniciar", async (req, res) => {
+  try {
+    const tarefa = await obterTarefa(req.params.id);
+    if (!tarefa) return res.status(404).json({ erro: "Tarefa não encontrada." });
+    if (!(await podeInteragirComTarefa(req.user, tarefa))) {
+      return res.status(403).json({ erro: "Só quem é responsável por esta tarefa (ou o responsável do projeto) pode reiniciar o registo de tempo." });
+    }
+    const colRein = await tempoLib.colunaDaTarefa(req.params.id);
+    if (colRein && colRein.timer_start) return res.status(400).json({ erro: tempoLib.MSG_AUTOMATICA });
+    await pool.query(`DELETE FROM gpitrack.time_entries WHERE task_id = $1`, [req.params.id]);
+    const io = req.app.get("io");
+    io.to(`project:${tarefa.project_id}`).emit("task:tempo-registado", { taskId: req.params.id, userId: req.user.id, seconds: 0 });
+    io.to(`user:${req.user.id}`).emit("tempo:parado", { taskId: req.params.id });
+    res.json({ ok: true, a_correr: false });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: "Erro ao reiniciar o registo de tempo." });
   }
 });
 

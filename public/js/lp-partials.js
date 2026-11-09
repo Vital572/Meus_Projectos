@@ -10,7 +10,16 @@ const LP_NAV_ITENS = [
   { href: "/sobre.html", label: "Sobre o projeto", id: "sobre" },
 ];
 
+// Quem já tem sessão iniciada vê "Os meus projetos" em vez de "Entrar / Criar conta"
+// (assim pode consultar os tutoriais e voltar à app sem sair da conta).
+function lpTemSessao() { try { return !!sessionStorage.getItem("gpitrack_token"); } catch { return false; } }
+
 function renderizarCabecalhoRodapeLP(paginaAtual) {
+  const logado = lpTemSessao();
+  const acoes = logado
+    ? `<a href="/projetos.html" class="btn btn-primary"><i class="bi bi-grid"></i> Os meus projetos</a>`
+    : `<a href="/entrar.html" class="btn" style="background:transparent;border:1px solid var(--border);color:var(--ink)">Entrar</a>
+        <a href="/entrar.html?criar=1" class="btn btn-primary">Criar conta grátis</a>`;
   const header = document.getElementById("lp-header");
   if (header) {
     header.innerHTML = `
@@ -24,13 +33,11 @@ function renderizarCabecalhoRodapeLP(paginaAtual) {
       <nav class="lp-nav" id="lp-nav-collapse">
         ${LP_NAV_ITENS.map((i) => `<a href="${i.href}" class="${i.id === paginaAtual ? "lp-nav-ativo" : ""}">${i.label}</a>`).join("")}
         <div class="lp-nav-actions lp-nav-actions-mobile">
-          <a href="/entrar.html" class="btn" style="background:transparent;border:1px solid var(--border);color:var(--ink)">Entrar</a>
-          <a href="/entrar.html?criar=1" class="btn btn-primary">Criar conta grátis</a>
+          ${acoes}
         </div>
       </nav>
       <div class="lp-nav-actions">
-        <a href="/entrar.html" class="btn" style="background:transparent;border:1px solid var(--border);color:var(--ink)">Entrar</a>
-        <a href="/entrar.html?criar=1" class="btn btn-primary">Criar conta grátis</a>
+        ${acoes}
       </div>
       <button class="lp-nav-toggle" type="button" id="lp-nav-toggle-btn" aria-controls="lp-nav-collapse" aria-expanded="false" aria-label="Abrir menu">
         <i class="bi bi-list"></i>
@@ -44,6 +51,14 @@ function renderizarCabecalhoRodapeLP(paginaAtual) {
       navToggleBtn.setAttribute("aria-expanded", aberto ? "true" : "false");
       navToggleBtn.innerHTML = aberto ? '<i class="bi bi-x-lg"></i>' : '<i class="bi bi-list"></i>';
     });
+  }
+
+  // Botões "Criar conta" no corpo da página (CTA / herói) — para quem já tem sessão levam à app
+  if (logado) {
+    document.querySelectorAll('a[href^="/entrar.html?criar=1"]:not(.lp-nav-actions a)').forEach((a) => {
+      a.href = "/projetos.html"; a.textContent = "Ir para os meus projetos";
+    });
+    document.querySelectorAll('a[href="/entrar.html"]:not(.lp-nav-actions a)').forEach((a) => { a.href = "/projetos.html"; });
   }
 
   const footer = document.getElementById("lp-footer");
@@ -69,8 +84,7 @@ function renderizarCabecalhoRodapeLP(paginaAtual) {
         <div>
           <h4>Conta</h4>
           <ul>
-            <li><a href="/entrar.html">Entrar</a></li>
-            <li><a href="/entrar.html?criar=1">Criar conta</a></li>
+            ${logado ? '<li><a href="/projetos.html">Os meus projetos</a></li>' : '<li><a href="/entrar.html">Entrar</a></li><li><a href="/entrar.html?criar=1">Criar conta</a></li>'}
           </ul>
         </div>
         <div>
@@ -84,7 +98,7 @@ function renderizarCabecalhoRodapeLP(paginaAtual) {
       </div>
       <div class="lp-footer-bottom">
         <span>© 2026 GPI Track · Universidade Kimpa Vita. Protótipo académico, sem fins comerciais.</span>
-        <span>Desenvolvido por Sílivia Figueiredo &amp; Vital Manuel</span>
+        <span>Desenvolvido por Vital Salaquiaco João Manuel &amp; Sílvia Imaculada Mayenga Figueiredo</span>
       </div>
     `;
   }

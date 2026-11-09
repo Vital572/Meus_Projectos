@@ -386,4 +386,43 @@ body.tz-sem-scroll { overflow: hidden; }
   .tz-nav .btn { padding: 11px 12px; font-size: 13px; }
   .tz-grid2 { grid-template-columns: 1fr; }
 }
-@media (prefers-reduced-motion: reduce) { .tz-in, .tz-cursor, .tz-sai, .tz-chega, .tz-big-ico, .tz-barra, .tz-grow { animation-duration: .01s !important; animation-delay: 0s !important; } }
+
+/* ---------- Cartões clicáveis e páginas de detalhe (exemplos / serviços) ---------- */
+a.lp-link-card { display: block; text-decoration: none; color: inherit; }
+a.lp-link-card.lp-service-card { display: block; }
+.lp-ver-mais { display: inline-flex; align-items: center; gap: 6px; margin-top: 14px; font-size: 12.5px; font-weight: 600; color: var(--cyan); }
+.lp-link-card:hover .lp-ver-mais i { transform: translateX(3px); }
+.lp-ver-mais i { transition: transform .2s; }
+.lp-service-card .lp-ver-mais { justify-content: center; }
+
+.lp-detalhe { max-width: 780px; margin: 0 auto; padding: 28px clamp(18px, 5vw, 40px) 20px; }
+.lp-detalhe-topo { margin-bottom: 26px; }
+.lp-detalhe-topo .tag { display: inline-block; font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 999px; margin-bottom: 12px; }
+.lp-detalhe-icone { font-size: 40px; display: block; margin-bottom: 10px; }
+.lp-detalhe-topo h1 { font-family: 'DM Serif Display', serif; font-size: clamp(28px, 4vw, 40px); margin: 0 0 12px; }
+.lp-detalhe-topo p { color: var(--ink-dim); font-size: 16px; line-height: 1.65; margin: 0; }
+.lp-nota { display: block; margin-top: 10px; color: var(--ink-faint); font-size: 12px; }
+.lp-detalhe-bloco { margin-bottom: 30px; }
+.lp-detalhe-bloco h2 { font-size: 18px; margin: 0 0 10px; }
+.lp-detalhe-bloco p { color: var(--ink-dim); font-size: 15px; line-height: 1.75; margin: 0; }
+.lp-detalhe-lista { display: flex; flex-direction: column; gap: 10px; }
+.lp-detalhe-lista > div { display: flex; flex-direction: column; gap: 2px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--card); }
+.lp-detalhe-lista span { color: var(--ink-dim); font-size: 14px; line-height: 1.55; }
+.lp-passos { list-style: none; counter-reset: p; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 12px; }
+.lp-passos li { counter-increment: p; position: relative; padding: 2px 0 2px 46px; display: flex; flex-direction: column; gap: 3px; }
+.lp-passos li::before { content: counter(p); position: absolute; left: 0; top: 0; width: 32px; height: 32px; border-radius: 50%; background: rgba(34,199,221,0.14); color: var(--cyan); font-weight: 700; display: flex; align-items: center; justify-content: center; }
+.lp-passos span { color: var(--ink-dim); font-size: 14.5px; line-height: 1.65; }
+.lp-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.lp-chips span { font-size: 12.5px; padding: 6px 12px; border-radius: 999px; border: 1px solid var(--border); color: var(--ink-dim); background: var(--card); }
+.lp-resultados { color: var(--ink-dim); font-size: 14.5px; line-height: 1.7; padding-left: 20px; margin: 0 0 12px; }
+.lp-licao { padding: 12px 14px; border-left: 3px solid var(--cyan); background: rgba(34,199,221,0.07); border-radius: 0 8px 8px 0; }
+.lp-mini-quadro { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-top: 12px; }
+.lp-mini-col { background: var(--card); border: 1px solid var(--border); border-top: 3px solid var(--cyan); border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 6px; }
+.lp-mini-col b { font-size: 12.5px; }
+.lp-mini-col > span { font-size: 22px; font-weight: 700; }
+.lp-mini-cartoes { display: flex; flex-direction: column; gap: 4px; }
+.lp-mini-cartoes i { display: block; height: 9px; border-radius: 3px; background: var(--navy-900); }
+.lp-detalhe-nav { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 8px; padding-top: 20px; border-top: 1px solid var(--border); }
+.lp-detalhe-nav a { font-size: 13px; padding: 9px 14px; border: 1px solid var(--border); border-radius: 10px; color: var(--ink-dim); text-decoration: none; transition: border-color .2s, color .2s; }
+.lp-detalhe-nav a:hover { border-color: var(--cyan); color: var(--cyan); }
+.lp-detalhe-vazio { text-align: center; padding: 60px 0; }

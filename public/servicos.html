@@ -17,32 +17,11 @@
   <div class="lp-page-hero">
     <span class="lp-eyebrow">🧩 Serviços</span>
     <h1>O que a plataforma oferece à sua equipa</h1>
-    <p>Quatro áreas centrais que cobrem o ciclo completo de trabalho em equipa à distância.</p>
+    <p>Oito serviços que cobrem o ciclo completo de trabalho em equipa à distância. Clique num serviço para ver como funciona.</p>
   </div>
 
   <section class="lp-section">
-    <div class="lp-services-grid">
-      <div class="lp-service-card">
-        <span class="icon">🗂️</span>
-        <h3>Gestão de projetos e tarefas</h3>
-        <p>Organize equipas, projetos, colunas e tarefas com permissões claras — inclusive vários responsáveis por projeto.</p>
-      </div>
-      <div class="lp-service-card">
-        <span class="icon">💬</span>
-        <h3>Comunicação em equipa</h3>
-        <p>Comentários, menções, conversa geral do projeto e anúncios sincronizados em tempo real.</p>
-      </div>
-      <div class="lp-service-card">
-        <span class="icon">📈</span>
-        <h3>Acompanhamento &amp; relatórios</h3>
-        <p>Dashboards com gráficos e relatórios exportáveis para acompanhar o progresso de cada equipa.</p>
-      </div>
-      <div class="lp-service-card">
-        <span class="icon">🔐</span>
-        <h3>Administração &amp; segurança</h3>
-        <p>Autenticação JWT, permissões por papel, colunas restritas, e controlo total de utilizadores.</p>
-      </div>
-    </div>
+    <div class="lp-services-grid" id="lp-lista"></div>
   </section>
 
   <div class="lp-cta">
@@ -54,8 +33,10 @@
   <footer class="lp-footer" id="lp-footer"></footer>
 
   <script src="/js/lp-partials.js"></script>
+  <script src="/js/conteudo-lp.js"></script>
   <script>
     renderizarCabecalhoRodapeLP("servicos");
+    lpRenderizarListaServicos(document.getElementById("lp-lista"));
     ativarRevealOnScrollLP();
   </script>
 </body>

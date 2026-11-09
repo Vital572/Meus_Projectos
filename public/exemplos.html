@@ -17,48 +17,11 @@
   <div class="lp-page-hero">
     <span class="lp-eyebrow">📁 Exemplos de uso</span>
     <h1>Projetos que já foram geridos com o GPI Track</h1>
-    <p>Casos ilustrativos do tipo de trabalho que a plataforma ajuda a acompanhar — do académico ao empresarial.</p>
+    <p>Casos ilustrativos do tipo de trabalho que a plataforma ajuda a acompanhar — do académico ao empresarial. Clique num projeto para ver como foi feito com o GPI Track.</p>
   </div>
 
   <section class="lp-section">
-    <div class="lp-showcase-grid">
-      <div class="lp-showcase-card">
-        <span class="tag" style="background:rgba(34,199,221,0.12);color:var(--cyan)">Académico</span>
-        <h3>Migração para PostgreSQL local</h3>
-        <p>Equipa de 4 estudantes de Engenharia Informática a acompanhar a migração de uma base de dados em regime remoto.</p>
-        <div class="lp-showcase-progress"><div style="width:72%"></div></div>
-        <div class="lp-showcase-meta">
-          <span>18 de 25 tarefas concluídas</span>
-          <div class="lp-avatars">
-            <span style="background:#22C7DD">VM</span><span style="background:#E67E22">AK</span><span style="background:#8E7CC3">DM</span>
-          </div>
-        </div>
-      </div>
-      <div class="lp-showcase-card">
-        <span class="tag" style="background:rgba(240,180,41,0.14);color:var(--warn)">Empresarial</span>
-        <h3>Lançamento de website institucional</h3>
-        <p>Equipa de marketing e desenvolvimento a coordenar prazos, aprovações e entregáveis à distância.</p>
-        <div class="lp-showcase-progress"><div style="width:45%"></div></div>
-        <div class="lp-showcase-meta">
-          <span>9 de 20 tarefas concluídas</span>
-          <div class="lp-avatars">
-            <span style="background:#34C77B">SF</span><span style="background:#EF6461">NP</span>
-          </div>
-        </div>
-      </div>
-      <div class="lp-showcase-card">
-        <span class="tag" style="background:rgba(52,199,123,0.14);color:var(--success)">Investigação</span>
-        <h3>Estudo comparativo de ferramentas de gestão</h3>
-        <p>O próprio trabalho de conclusão de curso, com checklist de capítulos, anexos e cronograma partilhado.</p>
-        <div class="lp-showcase-progress"><div style="width:60%"></div></div>
-        <div class="lp-showcase-meta">
-          <span>Set. 2026 · em curso</span>
-          <div class="lp-avatars">
-            <span style="background:#0EA5B7">VM</span><span style="background:#E67E22">SF</span>
-          </div>
-        </div>
-      </div>
-    </div>
+    <div class="lp-showcase-grid" id="lp-lista"></div>
   </section>
 
   <div class="lp-cta">
@@ -70,8 +33,10 @@
   <footer class="lp-footer" id="lp-footer"></footer>
 
   <script src="/js/lp-partials.js"></script>
+  <script src="/js/conteudo-lp.js"></script>
   <script>
     renderizarCabecalhoRodapeLP("projetos");
+    lpRenderizarListaExemplos(document.getElementById("lp-lista"));
     ativarRevealOnScrollLP();
   </script>
 </body>

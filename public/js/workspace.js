@@ -4,7 +4,7 @@ let socket = null;
 const rotuloTabs = {
   "visao-geral": "tab-visao-geral", "equipas": "tab-equipas", "projetos": "tab-projetos",
   "tarefas": "tab-tarefas", "semana": "tab-semana", "membros": "tab-membros", "atividades": "tab-atividades",
-  "relatorios": "tab-relatorios", "reunioes": "tab-reunioes", "feedback": "tab-feedback",
+  "relatorios": "tab-relatorios", "reunioes": "tab-reunioes", "convites": "tab-convites", "feedback": "tab-feedback",
 };
 const rotuloPrioridade = { alta: "🔴 Alta", media: "🟡 Média", baixa: "🟢 Baixa" };
 const ROTULO_ACAO_ATIVIDADE = {
@@ -26,6 +26,26 @@ async function iniciar() {
     return;
   }
 
+  // Barreira de acesso: o Espaço de Gestão é só para administradores e para quem é
+  // responsável de pelo menos um projeto. Qualquer outra pessoa é reencaminhada
+  // ANTES de se desenhar o que quer que seja (e o servidor recusa os dados na mesma).
+  try {
+    const projetosAcesso = await api.get("/api/projects");
+    const responsavelDe = projetosAcesso.filter((p) => p.meu_papel === "responsavel").map((p) => p.id);
+    const projetoPedido = new URLSearchParams(window.location.search).get("projeto");
+    if (eu.role !== "admin" && responsavelDe.length === 0) {
+      window.location.replace(projetoPedido ? `/board.html?projeto=${projetoPedido}` : "/projetos.html");
+      return;
+    }
+    if (eu.role !== "admin" && projetoPedido && !responsavelDe.includes(projetoPedido)) {
+      window.location.replace(`/board.html?projeto=${projetoPedido}`);
+      return;
+    }
+  } catch {
+    window.location.replace("/projetos.html");
+    return;
+  }
+
   document.getElementById("user-chip").innerHTML = `
     <div class="avatar" style="background:#22C7DD">${iniciais(eu.name)}</div>
     <div class="who">${eu.name}<small>${eu.email}</small></div>
@@ -42,6 +62,9 @@ async function iniciar() {
 
   socket = io({ auth: { token: sessao.obterToken() } });
   iniciarNotificacoes(socket);
+  // Reunião marcada/cancelada por outra pessoa: atualiza a lista sem recarregar a página
+  socket.on("reunioes:alteradas", () => { carregarReunioes().catch(() => {}); });
+  socket.on("notification:new", () => { carregarConvitesWs().catch(() => {}); });
 
   ligarNavegacao();
   ligarPesquisaLista("pesquisa-equipas", "lista-equipas");
@@ -65,6 +88,7 @@ async function iniciar() {
       carregarRelatorioPessoal(),
       carregarGraficos(),
       carregarReunioes(),
+      carregarConvitesWs(),
     ]);
   } catch (err) {
     if (err.status === 403) {
@@ -443,10 +467,20 @@ function cartaoReuniao(m) {
   `;
 }
 
+async function carregarConvitesWs() {
+  const pedidos = await api.get("/api/projects/convites/para-aprovar");
+  const badge = document.getElementById("badge-convites-ws");
+  badge.textContent = pedidos.length; badge.style.display = pedidos.length ? "inline-block" : "none";
+  Convites.listaAprovar(document.getElementById("convites-ws-lista"), pedidos, carregarConvitesWs, "Não há pedidos de convite à espera de aprovação.");
+}
+
 async function carregarReunioes() {
   const projetos = await api.get("/api/projects");
   const selProjeto = document.getElementById("reuniao-projeto");
-  selProjeto.innerHTML = projetos.map((p) => `<option value="${p.id}">${p.name}</option>`).join("") || `<option value="">Sem projetos</option>`;
+  const geriveis = projetos.filter((p) => eu.role === "admin" || p.meu_papel === "responsavel");
+  selProjeto.innerHTML = geriveis.map((p) => `<option value="${p.id}">${p.name}</option>`).join("") || `<option value="">Sem projetos</option>`;
+  const cardMarcar = document.getElementById("card-marcar-reuniao");
+  if (cardMarcar) cardMarcar.style.display = geriveis.length ? "" : "none";
 
   const reunioes = await api.get("/api/workspace/reunioes");
   const agora = new Date();
@@ -484,7 +518,7 @@ async function marcarReuniao() {
 }
 
 async function cancelarReuniao(id) {
-  if (!confirm("Cancelar esta reunião? A equipa será notificada.")) return;
+  if (!(await gpiConfirm("Cancelar esta reunião? A equipa será notificada."))) return;
   try {
     await api.del(`/api/workspace/reunioes/${id}`);
     mostrarToast("Reunião cancelada.");

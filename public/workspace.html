@@ -39,6 +39,7 @@
       <div class="admin-nav-item" data-tab="atividades">🕓 Atividades recentes</div>
       <div class="admin-nav-item" data-tab="relatorios">📄 Relatórios</div>
       <div class="admin-nav-item" data-tab="reunioes">🗓️ Reuniões</div>
+      <div class="admin-nav-item" data-tab="convites">📨 Pedidos de convite <span id="badge-convites-ws" class="badge-contagem" style="display:none"></span></div>
       <div class="admin-nav-item" data-tab="feedback">💬 Feedback</div>
 
       <div id="nav-admin" style="display:none;margin-top:14px">
@@ -220,7 +221,7 @@
 
       <!-- Reuniões -->
       <section id="tab-reunioes" class="admin-tab" style="display:none">
-        <div class="report-card" style="margin-bottom:28px">
+        <div class="report-card" id="card-marcar-reuniao" style="margin-bottom:28px">
           <h3>🗓️ Marcar reunião</h3>
           <p>Todos os membros do projeto escolhido são participantes automáticos e recebem uma notificação instantânea.</p>
 
@@ -257,6 +258,15 @@
         <div id="lista-reunioes-passadas"></div>
       </section>
 
+      <!-- Pedidos de convite para aprovar -->
+      <section id="tab-convites" class="admin-tab" style="display:none">
+        <div class="report-card">
+          <h3>📨 Pedidos de convite para aprovar</h3>
+          <p>Pessoas propostas por membros para entrar nos projetos de que é responsável. Marque quais aprovar ou rejeitar.</p>
+          <div id="convites-ws-lista" style="margin-top:14px"></div>
+        </div>
+      </section>
+
       <!-- Feedback -->
       <section id="tab-feedback" class="admin-tab" style="display:none">
         <div class="report-card">
@@ -280,6 +290,8 @@
   <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
   <script src="/js/workspace.js"></script>
+  <script src="/js/convites.js"></script>
   <script src="/js/ui-shell.js"></script>
+  <script src="/js/voltar.js"></script>
 </body>
 </html>

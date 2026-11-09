@@ -27,13 +27,15 @@
         <div class="project-switcher-lista" id="ps-lista" style="display:none"></div>
       </div>
       <div id="bloco-espaco-gestao" style="display:none;padding:9px 10px;border-radius:8px;cursor:pointer;font-size:13px;color:var(--ink-dim);border:1px solid var(--border);margin-bottom:6px" onclick="location.href='/workspace.html?voltar='+projectId">🧭 Espaço de gestão</div>
+      <div id="bloco-pedidos-convite" style="display:none;padding:9px 10px;border-radius:8px;cursor:pointer;font-size:13px;color:var(--ink-dim);border:1px solid var(--border);margin-bottom:6px" onclick="abrirPedidosConvite()">📨 Pedidos de convite <span id="badge-pedidos" class="badge-contagem" style="display:none"></span></div>
+      <div id="bloco-reunioes" style="padding:9px 10px;border-radius:8px;cursor:pointer;font-size:13px;color:var(--ink-dim);border:1px solid var(--border);margin-bottom:6px" onclick="abrirReunioesProjeto()">🗓️ Reuniões</div>
       <div id="nav-admin" style="display:none;margin:6px 0 4px">
         <div style="padding:9px 10px;border-radius:8px;cursor:pointer;font-size:13px;color:var(--ink-dim);border:1px solid var(--border)" onclick="location.href='/admin.html?voltar='+projectId">🛠️ Administração</div>
       </div>
 
-      <div class="nav-section-label">Membros do projeto</div>
-      <div id="lista-membros" style="display:flex;flex-direction:column;gap:8px;margin-bottom:6px"></div>
-      <button class="add-task-btn" onclick="abrirModalConvite()">+ Convidar membro</button>
+      <div class="nav-section-label" style="display:flex;justify-content:space-between;align-items:center">Membros do projeto <span id="membros-resumo" style="text-transform:none;letter-spacing:0;font-weight:600"></span></div>
+      <div id="lista-membros" style="display:flex;flex-direction:column;gap:4px;margin-bottom:8px"></div>
+      <button class="add-task-btn" onclick="abrirModalConvite()">+ Convidar membros</button>
 
       <div id="bloco-campos-personalizados" style="display:none;margin-top:10px">
         <div class="nav-section-label">Personalização</div>
@@ -89,6 +91,7 @@
         <button class="view-tab" data-view="calendario">📅 Calendário</button>
         <button class="view-tab" data-view="gantt">📊 Gantt</button>
         <button class="view-tab" data-view="metas">🎯 Metas</button>
+        <button class="view-tab" data-view="equipa">👥 Equipa</button>
         <button class="view-tab" data-view="conversa">💬 Conversa da equipa</button>
         <button class="view-tab" data-view="automacoes">⚡ Automações</button>
       </div>
@@ -106,7 +109,12 @@
             <option value="etiqueta">Agrupar: Etiqueta</option>
           </select>
         </div>
-        <div class="board-columns" id="board-columns"></div>
+        <div class="board-nav" id="board-nav" style="display:none" aria-label="Ir para a coluna"></div>
+        <div class="board-wrap" id="board-wrap">
+          <button type="button" class="board-seta esq" id="board-seta-esq" aria-label="Colunas anteriores" title="Colunas anteriores"><span>‹</span></button>
+          <div class="board-columns" id="board-columns"></div>
+          <button type="button" class="board-seta dir" id="board-seta-dir" aria-label="Mais colunas" title="Mais colunas"><span>›</span></button>
+        </div>
       </div>
 
       <!-- Vista: Gantt (Monday.com / Smartsheet) -->
@@ -119,13 +127,21 @@
       <div id="view-metas" style="display:none">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
           <p class="sub" style="margin:0">Progresso calculado a partir das tarefas ligadas a cada meta.</p>
-          <button class="add-task-btn" style="width:auto" onclick="abrirModalNovaMeta()">+ Nova meta</button>
+          <button class="add-task-btn" id="btn-nova-meta" style="width:auto" onclick="abrirModalNovaMeta()">+ Nova meta</button>
         </div>
+        <div class="filtros-barra"><input type="search" id="metas-busca" class="filtro-busca" placeholder="🔍 Pesquisar metas (nome ou descrição)…" /><span class="filtro-contagem" id="metas-contagem"></span></div>
         <div id="metas-lista"></div>
       </div>
 
       <!-- Vista: Lista -->
       <div id="view-lista" style="display:none">
+        <div class="filtros-barra">
+          <input type="search" id="lista-busca" class="filtro-busca" placeholder="🔍 Pesquisar tarefas (título, coluna, responsável)…" />
+          <select id="lista-f-coluna"><option value="">Todas as colunas</option></select>
+          <select id="lista-f-prio"><option value="">Todas as prioridades</option><option value="alta">Alta</option><option value="media">Média</option><option value="baixa">Baixa</option></select>
+          <button type="button" class="mini-btn" id="lista-limpar">Limpar</button>
+          <span class="filtro-contagem" id="lista-contagem"></span>
+        </div>
         <table class="admin-table grid-table">
           <thead><tr><th>#</th><th>Tarefa</th><th>Coluna</th><th>Prioridade</th><th>Responsável</th><th>Prazo</th></tr></thead>
           <tbody id="tbody-lista-tarefas"></tbody>
@@ -135,20 +151,61 @@
       <!-- Vista: Calendário -->
       <div id="view-calendario" style="display:none">
         <div class="cal-toolbar">
-          <button class="mini-btn" id="cal-anterior">←</button>
-          <div id="cal-titulo-mes" style="font-weight:700;font-size:15px;min-width:160px;text-align:center"></div>
-          <button class="mini-btn" id="cal-seguinte">→</button>
+          <button class="mini-btn" id="cal-anterior" title="Mês anterior">←</button>
+          <div id="cal-titulo-mes" style="font-weight:700;font-size:15px;min-width:140px;text-align:center"></div>
+          <button class="mini-btn" id="cal-seguinte" title="Mês seguinte">→</button>
+          <select id="cal-sel-mes" aria-label="Mês"></select>
+          <select id="cal-sel-ano" aria-label="Ano"></select>
+          <button class="mini-btn" id="cal-hoje">Hoje</button>
         </div>
+        <button type="button" class="mini-btn cal-filtros-toggle" id="cal-filtros-toggle" aria-expanded="false"><i class="bi bi-funnel"></i> Filtros <span id="cal-filtros-n" class="cal-filtros-n"></span> <span class="seta">▾</span></button>
+        <div class="cal-filtros-wrap" id="cal-filtros-wrap">
+        <div class="filtros-barra cal-filtros">
+          <input type="search" id="cal-busca" class="filtro-busca" placeholder="🔍 Pesquisar tarefas…" />
+          <select id="cal-f-prio"><option value="">Todas as prioridades</option><option value="alta">Alta</option><option value="media">Média</option><option value="baixa">Baixa</option></select>
+          <select id="cal-f-resp"><option value="">Todos os responsáveis</option></select>
+          <select id="cal-f-estado"><option value="">Todos os estados</option><option value="pendente">Pendentes</option><option value="concluida">Concluídas</option><option value="atrasada">Em atraso</option></select>
+        </div>
+        <div class="filtros-barra cal-filtros">
+          <label class="filtro-data">Ir para o dia <input type="date" id="cal-f-dia" /></label>
+          <label class="filtro-data">Período: de <input type="date" id="cal-f-de" /></label>
+          <label class="filtro-data">até <input type="date" id="cal-f-ate" /></label>
+          <button type="button" class="mini-btn" id="cal-f-lista" style="display:none">Ver lista do período</button>
+          <button type="button" class="mini-btn" id="cal-f-limpar">Limpar filtros</button>
+        </div>
+        </div>
+        <div class="cal-resumo-filtro" id="cal-resumo-filtro"></div>
         <div class="cal-grid" id="cal-cabecalho"></div>
         <div class="cal-grid" id="cal-corpo"></div>
       </div>
 
       <!-- Vista: Conversa da equipa -->
+      <div id="view-equipa" style="display:none">
+        <div class="equipa-topo">
+          <input type="search" id="equipa-busca" class="filtro-busca" placeholder="🔍 Pesquisar membros…" autocomplete="off" />
+          <span class="sub" id="equipa-contagem"></span>
+        </div>
+        <div id="equipa-grelha" class="equipa-grelha"></div>
+      </div>
+
       <div id="view-conversa" style="display:none">
         <div class="channel-box">
           <div class="channel-header">
             <span class="dot"></span> Conversa da equipa · <span id="channel-nome-projeto"></span>
-            <input type="text" id="channel-pesquisa" placeholder="🔍 Pesquisar na conversa…" style="margin-left:auto;width:220px;padding:6px 10px;font-size:12.5px;border-radius:20px;border:1px solid var(--border);background:var(--navy-900);color:var(--ink)" />
+            <button type="button" class="mini-btn" id="btn-channel-selecionar" title="Selecionar mensagens" style="margin-left:auto"><i class="bi bi-check2-square"></i> <span class="d-none d-sm-inline">Selecionar</span></button>
+            <input type="text" id="channel-pesquisa" placeholder="🔍 Pesquisar…" class="channel-pesquisa" />
+          </div>
+          <div class="channel-grupos" id="channel-grupos"></div>
+          <div class="channel-grupo-info" id="channel-grupo-info" style="display:none"></div>
+          <div class="channel-fixadas" id="channel-fixadas" style="display:none"></div>
+          <div class="channel-selecao-bar" id="channel-selecao-bar" style="display:none">
+            <button type="button" class="mini-btn" onclick="sairModoSelecao()" title="Cancelar seleção">✕</button>
+            <strong id="channel-sel-contagem">0 selecionadas</strong>
+            <button type="button" class="mini-btn" onclick="selecionarTodasVisiveis()"><i class="bi bi-check-all"></i> Todas</button>
+            <span style="margin-left:auto;display:flex;gap:6px">
+              <button type="button" class="mini-btn" id="btn-sel-copiar" onclick="copiarSelecionadas()"><i class="bi bi-clipboard"></i> Copiar</button>
+              <button type="button" class="mini-btn perigo" id="btn-sel-eliminar" onclick="abrirEliminarSelecionadas()"><i class="bi bi-trash"></i> Eliminar</button>
+            </span>
           </div>
           <div class="channel-feed" id="channel-feed"></div>
           <div id="channel-digitando" class="typing-indicator"></div>
@@ -186,6 +243,7 @@
               <option value="atribuir">👤 Atribuir automaticamente a alguém</option>
               <option value="definir_prioridade">🎯 Mudar a prioridade da tarefa</option>
               <option value="concluir_checklist">✔️ Marcar toda a checklist como concluída</option>
+              <option value="iniciar_tempo">⏱️ Iniciar o registo de tempo (ao responsável da tarefa)</option>
             </select>
           </div>
           <div class="field" id="campo-auto-notificar">
@@ -209,6 +267,7 @@
           </div>
         </div>
         <div class="nav-section-label">Automações ativas</div>
+        <div class="filtros-barra"><input type="search" id="auto-busca" class="filtro-busca" placeholder="🔍 Pesquisar automações (nome, coluna ou ação)…" /><span class="filtro-contagem" id="auto-contagem"></span></div>
         <div id="lista-automacoes"></div>
       </div>
     </main>
@@ -237,8 +296,8 @@
   <div class="overlay" id="overlay-convite">
     <div class="gpi-modal" style="position:relative;max-width:440px">
       <span class="modal-close" onclick="fecharModalConvite()">&times;</span>
-      <h3>Convidar membro</h3>
-      <div class="sub" style="margin-bottom:14px">Pesquise por nome ou e-mail. A pessoa recebe um convite e decide se aceita entrar.</div>
+      <h3>Convidar membros</h3>
+      <div class="sub" style="margin-bottom:14px">Pesquise por nome ou e-mail e selecione uma ou várias pessoas. Cada uma recebe um convite e decide se aceita entrar.</div>
       <div class="error-box" id="erro-convite"></div>
 
       <div style="display:flex;gap:8px;margin-bottom:12px">
@@ -250,7 +309,59 @@
         </select>
       </div>
 
-      <div id="conv-resultados" style="max-height:300px;overflow-y:auto;display:flex;flex-direction:column;gap:6px"></div>
+      <div class="conv-barra">
+        <label class="conv-todos"><input type="checkbox" id="conv-todos" /> <span>Selecionar todos</span></label>
+        <span class="conv-contagem" id="conv-contagem">Nenhum selecionado</span>
+        <button type="button" class="mini-btn" id="conv-limpar" style="display:none">Limpar</button>
+      </div>
+      <div id="conv-resultados" class="conv-resultados"></div>
+      <button type="button" class="btn btn-primary conv-enviar" id="conv-enviar" disabled>Convidar selecionados</button>
+    </div>
+  </div>
+
+  <!-- Modal: pedidos de convite para aprovar (responsáveis) -->
+  <div class="overlay" id="overlay-pedidos">
+    <div class="gpi-modal" style="position:relative;max-width:560px">
+      <span class="modal-close" onclick="fecharPedidosConvite()">&times;</span>
+      <h3>📨 Pedidos de convite</h3>
+      <div class="sub" style="margin-bottom:12px">Pessoas propostas por membros para entrar neste projeto. Marque quais aprovar ou rejeitar.</div>
+      <div id="pedidos-lista"></div>
+    </div>
+  </div>
+
+  <!-- Modal: reuniões do projeto (visível a todos os membros) -->
+  <div class="overlay" id="overlay-reunioes">
+    <div class="gpi-modal" style="position:relative;max-width:520px">
+      <span class="modal-close" onclick="fecharReunioesProjeto()">&times;</span>
+      <h3>🗓️ Reuniões do projeto</h3>
+      <div class="sub" style="margin-bottom:12px">As reuniões marcadas pelos responsáveis deste projeto.</div>
+      <div id="reunioes-projeto-lista" class="reunioes-lista"></div>
+      <div id="reunioes-projeto-gerir" style="margin-top:14px;display:none">
+        <a class="btn btn-primary" style="width:auto;text-decoration:none" id="reunioes-gerir-link" href="#">Marcar ou cancelar no Espaço de gestão</a>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: perfil do membro -->
+  <div class="overlay" id="overlay-membro">
+    <div class="gpi-modal" style="position:relative;max-width:460px">
+      <span class="modal-close" onclick="fecharPerfilMembro()">&times;</span>
+      <div class="perfil-topo">
+        <div class="avatar perfil-avatar" id="pm-avatar"></div>
+        <div style="min-width:0">
+          <h3 id="pm-nome" style="margin:0"></h3>
+          <div class="perfil-papel" id="pm-papel"></div>
+        </div>
+      </div>
+      <div class="perfil-linhas">
+        <div class="perfil-linha"><span>Nível na equipa</span><b id="pm-nivel"></b></div>
+        <div class="perfil-linha"><span>Email</span><b id="pm-email"></b></div>
+        <div class="perfil-linha"><span>Estado</span><b id="pm-estado"></b></div>
+        <div class="perfil-linha"><span>Última vez online</span><b id="pm-visto"></b></div>
+      </div>
+      <h4 class="perfil-sub">Tarefas atribuídas <span id="pm-tarefas-n" class="sub"></span></h4>
+      <div id="pm-tarefas" class="perfil-tarefas"></div>
+      <div class="perfil-acoes" id="pm-acoes"></div>
     </div>
   </div>
 
@@ -283,6 +394,13 @@
             <span style="font-size:11px;color:var(--ink-faint)">Ex.: "Em Revisão" — os restantes membros nem sequer a veem no quadro.</span>
           </label>
         </div>
+        <div class="field" id="campo-coluna-timer" style="display:flex;align-items:center;gap:9px;background:var(--navy-900);border:1px solid var(--border);border-radius:9px;padding:11px 13px">
+          <input type="checkbox" id="coluna-timer" style="width:16px;height:16px;accent-color:var(--cyan);cursor:pointer" />
+          <label for="coluna-timer" style="margin:0;cursor:pointer;font-size:12.5px;color:var(--ink-dim)">
+            ⏱️ <b>Iniciar o registo de tempo</b> quando uma tarefa entrar nesta coluna<br/>
+            <span id="coluna-timer-nota" style="font-size:11px;color:var(--ink-faint)">Conta para o responsável da tarefa. Nunca conta em colunas concluídas ou protegidas.</span>
+          </label>
+        </div>
         <button class="btn btn-primary" type="submit" id="btn-guardar-coluna" style="margin-top:6px">Criar coluna</button>
       </form>
     </div>
@@ -293,11 +411,47 @@
     <div class="gpi-modal" style="position:relative;max-width:440px">
       <span class="modal-close" onclick="fecharModalDia()">&times;</span>
       <h3 id="titulo-modal-dia">Tarefas do dia</h3>
-      <div id="lista-tarefas-dia" style="margin-top:12px;display:flex;flex-direction:column;gap:8px"></div>
+      <div class="dia-busca-box" id="dia-busca-box">
+        <input type="search" id="dia-busca" class="filtro-busca" style="max-width:none;width:100%" placeholder="🔍 Pesquisar nestas tarefas (título, coluna, responsável…)" autocomplete="off" />
+        <div class="filtro-contagem" id="dia-contagem" style="margin:6px 2px 0"></div>
+      </div>
+      <div id="lista-tarefas-dia" class="lista-tarefas-dia"></div>
     </div>
   </div>
 
   <!-- Modal: escolher como eliminar uma mensagem do canal -->
+  <!-- Eliminar mensagens selecionadas -->
+  <div class="overlay" id="overlay-eliminar-selecao">
+    <div class="gpi-modal" style="position:relative;max-width:400px">
+      <span class="modal-close" onclick="fecharEliminarSelecionadas()">&times;</span>
+      <h3 id="sel-del-titulo">Eliminar mensagens</h3>
+      <p class="sub" id="sel-del-texto" style="margin:10px 0 18px"></p>
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <button type="button" class="btn btn-primary" id="sel-del-todos" style="width:100%" onclick="confirmarEliminarSelecionadas('todos')">Eliminar para todos</button>
+        <button type="button" class="btn btn-ghost" style="width:100%" onclick="confirmarEliminarSelecionadas('mim')">Eliminar para mim</button>
+        <button type="button" class="btn btn-ghost" style="width:100%;border-color:transparent;color:var(--ink-faint)" onclick="fecharEliminarSelecionadas()">Cancelar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Criar / gerir grupo da conversa -->
+  <div class="overlay" id="overlay-grupo">
+    <div class="gpi-modal" style="position:relative;max-width:460px">
+      <span class="modal-close" onclick="fecharModalGrupo()">&times;</span>
+      <h3 id="grupo-modal-titulo">Novo grupo</h3>
+      <p class="sub" style="margin:6px 0 12px">Uma conversa à parte, só para as pessoas escolhidas (ex.: o grupo de uma tarefa).</p>
+      <div class="field"><label>Nome do grupo</label><input type="text" id="grupo-nome" maxlength="80" placeholder="Ex.: Equipa da tarefa X" /></div>
+      <div class="field" id="grupo-campo-tarefa"><label>Ligado a uma tarefa (opcional)</label><select id="grupo-tarefa"><option value="">— Nenhuma —</option></select>
+        <div class="sub" style="font-size:11.5px;margin-top:4px">Os responsáveis da tarefa entram automaticamente.</div></div>
+      <div class="field"><label>Membros <span id="grupo-contagem" class="sub"></span></label><div id="grupo-membros" class="grupo-membros-lista"></div><div class="sub" style="font-size:11.5px;margin-top:6px">★ = responsável do grupo (pode gerir os membros).</div></div>
+      <div id="grupo-erro" class="error-box" style="display:none"></div>
+      <div style="display:flex;gap:10px;margin-top:14px">
+        <button type="button" class="btn btn-primary" onclick="guardarGrupo()">Guardar</button>
+        <button type="button" class="btn btn-ghost perigo" id="btn-grupo-eliminar" style="display:none" onclick="eliminarGrupo()">Eliminar grupo</button>
+      </div>
+    </div>
+  </div>
+
   <div class="overlay" id="overlay-eliminar-mensagem">
     <div class="gpi-modal" style="position:relative;max-width:380px">
       <span class="modal-close" onclick="fecharModalEliminarMensagem()">&times;</span>
@@ -394,6 +548,18 @@
             <option value="equipa" selected>Todos os membros da equipa</option>
             <option value="restrita">Só os responsáveis do projeto e os responsáveis da tarefa</option>
           </select>
+        </div>
+        <div class="field nt-grupo" id="campo-nt-grupo" style="display:none">
+          <label class="switch-linha" for="nt-grupo-ativo">
+            <input type="checkbox" id="nt-grupo-ativo" />
+            <span class="switch"></span>
+            <span><strong>Criar um grupo de conversa para esta tarefa</strong><small>Uma sala à parte só para quem trabalha nela</small></span>
+          </label>
+          <div id="nt-grupo-opcoes" class="nt-grupo-opcoes" style="display:none">
+            <input type="text" id="nt-grupo-nome" maxlength="80" placeholder="Nome do grupo (por omissão: Tarefa: título)" />
+            <div class="sub" style="font-size:11.5px;margin:8px 0 6px">Marque quem entra no grupo e use <b>★</b> para escolher os <b>responsáveis do grupo</b> (podem gerir os membros).</div>
+            <div id="nt-grupo-membros" class="grupo-membros-lista"></div>
+          </div>
         </div>
         <div class="field">
           <label>Etiquetas</label>
@@ -521,7 +687,15 @@
                 <div class="cronometro-box">
                   <span class="cronometro-tempo" id="cron-tempo-total">0m</span>
                   <button type="button" class="btn btn-primary" id="btn-cronometro" onclick="alternarCronometro()">▶️ Iniciar</button>
+                  <button type="button" class="btn btn-ghost" id="btn-cron-reiniciar" onclick="reiniciarCronometro()" title="Voltar o registo de tempo a zero">🔄 Reiniciar</button>
                 </div>
+                <div class="sub" id="cron-aviso" style="display:none;font-size:11.5px;margin-top:6px">⏸️ O registo de tempo não conta em colunas protegidas nem em colunas concluídas.
+                </div>
+              </div>
+
+              <div class="mt-sec" id="det-sec-grupo" style="display:none">
+                <div class="mt-sec-titulo"><i class="bi bi-chat-square-text"></i> Grupo da tarefa</div>
+                <button type="button" class="mini-btn" id="btn-grupo-tarefa" onclick="abrirGrupoDaTarefa()"><i class="bi bi-people-fill"></i> <span>Abrir grupo</span></button>
               </div>
 
               <div class="mt-sec">
@@ -566,7 +740,9 @@
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
   <script src="/js/api.js"></script>
   <script src="/js/notifications.js"></script>
+  <script src="/js/convites.js"></script>
   <script src="/js/ui-shell.js"></script>
   <script src="/js/board.js"></script>
+  <script src="/js/voltar.js"></script>
 </body>
 </html>

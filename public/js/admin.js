@@ -15,8 +15,8 @@ async function iniciar() {
     return;
   }
   if (eu.role !== "admin") {
-    alert("Acesso restrito a administradores.");
-    window.location.href = "/projetos.html";
+    const ir = () => (window.location.href = "/projetos.html");
+    if (window.gpiAviso) gpiAviso("Acesso restrito a administradores.", "Acesso restrito").then(ir); else ir();
     return;
   }
 
@@ -200,7 +200,7 @@ async function alternarPapel(id, papelAtual) {
 
 async function alternarEstado(id, ativoAtual) {
   const acao = ativoAtual ? "desativar" : "reativar";
-  if (ativoAtual && !confirm("Desativar esta conta termina imediatamente todas as sessões ativas do utilizador. Continuar?")) return;
+  if (ativoAtual && !(await gpiConfirm("Desativar esta conta termina imediatamente todas as sessões ativas do utilizador. Continuar?"))) return;
   try {
     await api.patch(`/api/admin/utilizadores/${id}`, { is_active: !ativoAtual });
     mostrarToast(`Conta ${acao === "desativar" ? "desativada" : "reativada"} com sucesso.`);
@@ -212,7 +212,7 @@ async function alternarEstado(id, ativoAtual) {
 }
 
 async function eliminarUtilizador(id, nome) {
-  if (!confirm(`Eliminar definitivamente a conta de "${nome}"? Esta ação não pode ser revertida.`)) return;
+  if (!(await gpiConfirm(`Eliminar definitivamente a conta de "${nome}"? Esta ação não pode ser revertida.`))) return;
   try {
     await api.del(`/api/admin/utilizadores/${id}`);
     mostrarToast("Utilizador eliminado.");
@@ -279,6 +279,7 @@ const rotuloTipoNotificacao = {
   "project.invite_accepted": "Convite aceite",
   "project.invite_declined": "Convite recusado",
   "project.left": "Saída de projeto",
+  "channel.group": "Grupo de conversa",
   "admin.announcement": "Anúncio da administração",
   "task.file_sent": "Ficheiro enviado ao responsável",
   "meeting.scheduled": "Reunião marcada",

@@ -15,6 +15,12 @@ let filtroEtiqueta = "";
 let projetosDoUtilizador = [];
 let timeoutDigitandoCanal = null;
 let mensagensCanalCache = [];
+let gruposCanal = [];
+let grupoAtivo = null; // null = conversa geral
+const gruposNaoLidos = new Set(); // 'geral' ou id do grupo com mensagens novas
+let modoSelecao = false;
+const mensagensSelecionadas = new Set();
+let fixadasAbertas = false;
 let camposPersonalizadosProjeto = [];
 let intervaloCronometro = null;
 
@@ -95,6 +101,11 @@ async function iniciar() {
   ligarControlosProjeto();
   ligarSeletorVistas();
 
+  if (params.get("reunioes")) {
+    abrirReunioesProjeto();
+    window.history.replaceState({}, "", `/board.html?projeto=${projectId}`);
+  }
+
   // Se veio de uma notificação (ex.: "foi-lhe atribuída esta tarefa"),
   // abre diretamente o detalhe dela em vez de deixar a pessoa à procura.
   const tarefaAlvo = params.get("tarefa");
@@ -109,7 +120,7 @@ async function iniciar() {
   }
 }
 
-async function carregarQuadro() {
+async function carregarQuadro(silencioso = false) {
   const projetos = await api.get("/api/projects");
   const projetoAtual = projetos.find((p) => p.id === projectId);
   document.getElementById("nome-projeto").textContent = projetoAtual ? projetoAtual.name : "Projeto";
@@ -122,6 +133,8 @@ async function carregarQuadro() {
 
   estado = await api.get(`/api/projects/${projectId}/quadro`);
 
+  const btnMeta = document.getElementById("btn-nova-meta");
+  if (btnMeta) btnMeta.style.display = souDonoDoProjeto() ? "" : "none";
   if (souDonoDoProjeto()) {
     document.getElementById("btn-editar-projeto").style.display = "inline";
     document.getElementById("btn-eliminar-projeto").style.display = "inline";
@@ -141,22 +154,217 @@ async function carregarQuadro() {
 
   renderizarMembros();
   renderizarQuadro();
+  carregarPedidosConvite();
+  iniciarNavegacaoQuadro();
+  if (!silencioso && window.animarEntrada) animarEntrada();
 }
 
 function renderizarMembros() {
+  if (document.getElementById("view-equipa")?.style.display !== "none") renderizarEquipa();
   const souGestor = souDonoDoProjeto();
-  document.getElementById("lista-membros").innerHTML = estado.membros.map((m) => `
-    <div style="display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--ink-dim)">
-      <div class="avatar" style="width:22px;height:22px;font-size:10px;background:${corPara(m.id)}">${iniciais(m.name)}</div>
-      <span style="flex:1">${m.name}${m.role === "responsavel" ? " 👑" : ""}</span>
+  const lista = document.getElementById("lista-membros");
+  const nOnline = estado.membros.filter((m) => idsOnline.has(m.id)).length;
+  const rotulo = document.getElementById("membros-resumo");
+  if (rotulo) rotulo.textContent = `${estado.membros.length} · ${nOnline} online`;
+  // Online primeiro, depois por nome.
+  const ordenados = [...estado.membros].sort((a, b) => (idsOnline.has(b.id) - idsOnline.has(a.id)) || a.name.localeCompare(b.name));
+  lista.innerHTML = ordenados.map((m) => {
+    const online = idsOnline.has(m.id);
+    const nivel = m.role === "responsavel" ? "Responsável" : "Membro";
+    return `
+    <div class="membro-linha membro-lateral">
+      <div class="avatar-wrap" onclick="abrirPerfilMembro('${m.id}')" role="button" tabindex="0" title="${m.id === eu.id ? "O meu perfil" : "Ver perfil"}">
+        <div class="avatar" style="width:26px;height:26px;font-size:10.5px;background:${corPara(m.id)}">${iniciais(m.name)}</div>
+        <span class="ponto-estado ${online ? "on" : ""}" title="${online ? "Online" : "Offline"}"></span>
+      </div>
+      <div class="membro-info" onclick="abrirPerfilMembro('${m.id}')" title="${escaparHtml(m.name)} — ${nivel}${online ? " · online" : ""}">
+        <div class="membro-nome">${escaparHtml(m.name)}${m.id === eu.id ? " <em>(eu)</em>" : ""}${m.role === "responsavel" ? " 👑" : ""}</div>
+        <div class="membro-sub">${nivel} · ${online ? "online" : "offline"}</div>
+      </div>
       ${souGestor ? `
-        <label style="display:flex;align-items:center;gap:4px;font-size:10.5px;color:var(--ink-faint);cursor:pointer" title="Tornar responsável do projeto">
+        <label class="membro-resp" title="Tornar responsável do projeto">
           <input type="checkbox" ${m.role === "responsavel" ? "checked" : ""} onchange="alternarResponsavel('${m.id}', this.checked)" style="accent-color:var(--cyan);cursor:pointer" />
-          Responsável
+          Resp.
         </label>` : ""}
-      ${m.id === eu.id ? `<span onclick="sairDoProjeto()" style="cursor:pointer;color:var(--ink-faint);font-size:13px" title="Sair do projeto">🚪</span>` : ""}
-    </div>
-  `).join("");
+    </div>`;
+  }).join("");
+}
+
+// Convites respondidos nas notificações (🔔) → atualiza o contador de pedidos
+window.addEventListener("convites:alterados", () => { carregarPedidosConvite(); });
+
+// ---------------- Pedidos de convite para aprovar (responsáveis) ----------------
+let pedidosConvite = [];
+async function carregarPedidosConvite() {
+  const bloco = document.getElementById("bloco-pedidos-convite");
+  if (!bloco) return;
+  if (!souDonoDoProjeto()) { bloco.style.display = "none"; return; }
+  try {
+    const todos = await api.get("/api/projects/convites/para-aprovar");
+    pedidosConvite = todos.filter((p) => p.projeto_id === projectId);
+  } catch { pedidosConvite = []; }
+  bloco.style.display = "block";
+  const badge = document.getElementById("badge-pedidos");
+  badge.textContent = pedidosConvite.length;
+  badge.style.display = pedidosConvite.length ? "inline-block" : "none";
+  if (document.getElementById("overlay-pedidos").classList.contains("open")) desenharPedidosConvite();
+}
+function desenharPedidosConvite() {
+  Convites.listaAprovar(document.getElementById("pedidos-lista"), pedidosConvite, async () => { await carregarPedidosConvite(); desenharPedidosConvite(); }, "Não há pedidos de convite à espera de aprovação.");
+}
+async function abrirPedidosConvite() {
+  await carregarPedidosConvite();
+  desenharPedidosConvite();
+  document.getElementById("overlay-pedidos").classList.add("open");
+}
+function fecharPedidosConvite() { document.getElementById("overlay-pedidos").classList.remove("open"); }
+
+// ---------------- Reuniões do projeto (para todos os membros) ----------------
+async function abrirReunioesProjeto() {
+  const lista = document.getElementById("reunioes-projeto-lista");
+  lista.innerHTML = `<div class="sub">A carregar…</div>`;
+  document.getElementById("overlay-reunioes").classList.add("open");
+  const gerir = document.getElementById("reunioes-projeto-gerir");
+  gerir.style.display = souDonoDoProjeto() ? "block" : "none";
+  document.getElementById("reunioes-gerir-link").href = `/workspace.html?projeto=${projectId}&aba=reunioes&voltar=${projectId}`;
+  try {
+    const todas = await api.get(`/api/projects/${projectId}/reunioes`);
+    const agora = new Date();
+    const futuras = todas.filter((m) => new Date(m.scheduled_at) >= agora);
+    const passadas = todas.filter((m) => new Date(m.scheduled_at) < agora).reverse();
+    const cartao = (m, passada) => `
+      <div class="reuniao-item ${passada ? "passada" : ""}">
+        <div class="reuniao-data">
+          <b>${new Date(m.scheduled_at).toLocaleDateString("pt-PT", { day: "2-digit", month: "short" })}</b>
+          <span>${new Date(m.scheduled_at).toLocaleTimeString("pt-PT", { hour: "2-digit", minute: "2-digit" })}</span>
+        </div>
+        <div style="min-width:0">
+          <div class="reuniao-titulo">${escaparHtml(m.title)}</div>
+          ${m.location ? `<div class="sub" style="font-size:12px">📍 ${escaparHtml(m.location)}</div>` : ""}
+          ${m.description ? `<div class="sub" style="font-size:12px">${escaparHtml(m.description)}</div>` : ""}
+          <div class="sub" style="font-size:11px;margin-top:2px">Marcada por ${escaparHtml(m.criado_por_nome || "—")}</div>
+        </div>
+      </div>`;
+    lista.innerHTML =
+      `<h4 class="perfil-sub" style="margin-top:0">Próximas</h4>` + (futuras.map((m) => cartao(m, false)).join("") || `<div class="sub">Sem reuniões marcadas.</div>`) +
+      (passadas.length ? `<h4 class="perfil-sub">Anteriores</h4>` + passadas.slice(0, 10).map((m) => cartao(m, true)).join("") : "");
+  } catch (err) {
+    lista.innerHTML = `<div class="sub">${escaparHtml(err.message)}</div>`;
+  }
+}
+function fecharReunioesProjeto() { document.getElementById("overlay-reunioes").classList.remove("open"); }
+
+// ---------------- Vista "Equipa" (todos os membros do projeto) ----------------
+let idsOnline = new Set();
+function renderizarEquipa() {
+  const grelha = document.getElementById("equipa-grelha");
+  if (!grelha) return;
+  const termo = norm(document.getElementById("equipa-busca").value.trim());
+  const lista = estado.membros.filter((m) => !termo || norm(m.name + " " + m.email).includes(termo));
+  const rotuloPapel = (m) => m.role === "responsavel" ? (m.id === eu.id ? "👑 Responsável (você)" : "👑 Responsável") : (m.id === eu.id ? "Membro (você)" : "Membro");
+  document.getElementById("equipa-contagem").textContent = `${lista.length} de ${estado.membros.length} ${estado.membros.length === 1 ? "membro" : "membros"} · ${estado.membros.filter((m) => idsOnline.has(m.id)).length} online`;
+  grelha.innerHTML = lista.map((m) => {
+    const online = idsOnline.has(m.id);
+    return `
+    <div class="equipa-cartao" role="button" tabindex="0" onclick="abrirPerfilMembro('${m.id}')">
+      <div class="avatar equipa-avatar" style="background:${m.avatar_color || corPara(m.id)}">${iniciais(m.name)}<i class="equipa-ponto ${online ? "on" : ""}"></i></div>
+      <div style="min-width:0;flex:1">
+        <div class="equipa-nome">${escaparHtml(m.name)}</div>
+        <div class="equipa-papel">${rotuloPapel(m)}</div>
+        <div class="equipa-email">${escaparHtml(m.email || "")}</div>
+        <div class="equipa-estado ${online ? "on" : ""}">${online ? "Online agora" : (m.last_seen_at ? "Visto " + tempoRelativo(m.last_seen_at).toLowerCase() : "Ainda sem registo")}</div>
+      </div>
+    </div>`;
+  }).join("") || `<div class="sub">Nenhum membro corresponde à pesquisa.</div>`;
+}
+
+// ---------------- Perfil do membro ----------------
+function tempoRelativo(iso) {
+  if (!iso) return "Ainda sem registo";
+  const d = new Date(iso), seg = Math.max(0, (Date.now() - d.getTime()) / 1000);
+  if (seg < 60) return "Há instantes";
+  if (seg < 3600) return `Há ${Math.floor(seg / 60)} min`;
+  if (seg < 86400) return `Há ${Math.floor(seg / 3600)} h`;
+  return d.toLocaleDateString("pt-PT", { day: "2-digit", month: "short", year: "numeric" }) + " às " + d.toLocaleTimeString("pt-PT", { hour: "2-digit", minute: "2-digit" });
+}
+
+async function abrirPerfilMembro(userId) {
+  const membro = estado.membros.find((m) => m.id === userId);
+  if (!membro) return;
+  document.getElementById("pm-avatar").style.background = corPara(userId);
+  document.getElementById("pm-avatar").textContent = iniciais(membro.name);
+  document.getElementById("pm-nome").textContent = membro.name;
+  document.getElementById("pm-papel").textContent = membro.role === "responsavel" ? "👑 Responsável do projeto" : "Membro da equipa";
+  document.getElementById("pm-email").textContent = membro.email || "—";
+  document.getElementById("pm-nivel").textContent = membro.role === "responsavel" ? "Responsável" : "Membro";
+  ["pm-estado", "pm-visto"].forEach((i) => (document.getElementById(i).textContent = "A carregar…"));
+  document.getElementById("pm-tarefas").innerHTML = `<div class="sub">A carregar…</div>`;
+  document.getElementById("pm-tarefas-n").textContent = "";
+  document.getElementById("pm-acoes").innerHTML = "";
+  document.getElementById("overlay-membro").classList.add("open");
+
+  try {
+    const p = await api.get(`/api/projects/${projectId}/membros/${userId}/perfil`);
+    document.getElementById("pm-email").textContent = p.email;
+    const ehAdmin = p.nivel_plataforma === "admin";
+    const nivel = ehAdmin ? (p.role === "responsavel" ? "Administrador · Responsável" : "Administrador") : (p.role === "responsavel" ? "Responsável" : "Membro");
+    document.getElementById("pm-nivel").textContent = nivel;
+    document.getElementById("pm-papel").textContent = (ehAdmin ? "🛡️ " : p.role === "responsavel" ? "👑 " : "") + nivel;
+    document.getElementById("pm-estado").innerHTML = p.online
+      ? `<span class="estado-online"><i></i>Online agora</span>`
+      : `<span class="estado-offline"><i></i>Offline</span>`;
+    document.getElementById("pm-visto").textContent = p.online ? "Agora mesmo" : tempoRelativo(p.last_seen_at);
+    document.getElementById("pm-tarefas-n").textContent = `(${p.tarefas.length})`;
+    const prio = { alta: "🔴", media: "🟡", baixa: "🟢" };
+    document.getElementById("pm-tarefas").innerHTML = p.tarefas.map((t) => `
+      <div class="perfil-tarefa ${t.is_done ? "feita" : ""}" onclick="fecharPerfilMembro();abrirModalDetalhe('${t.id}')">
+        <span>${prio[t.priority] || ""}</span>
+        <span class="pt-titulo">${escaparHtml(t.title)}</span>
+        <span class="pt-col">${escaparHtml(t.coluna)}</span>
+        ${t.due_date ? `<span class="pt-data">${new Date(t.due_date).toLocaleDateString("pt-PT", { day: "2-digit", month: "short" })}</span>` : ""}
+      </div>`).join("") || `<div class="sub">Sem tarefas atribuídas neste projeto.</div>`;
+
+    const acoes = document.getElementById("pm-acoes");
+    if (userId === eu.id) {
+      acoes.innerHTML = `<button type="button" class="btn btn-perigo" onclick="fecharPerfilMembro();sairDoProjeto()"><i class="bi bi-box-arrow-right"></i> Sair do projeto</button>`;
+    } else if (souDonoDoProjeto()) {
+      const ehResp = p.role === "responsavel";
+      acoes.innerHTML =
+        `<button type="button" class="btn ${ehResp ? "btn-ghost" : "btn-primary"}" onclick="atribuirResponsavelDoPerfil('${userId}', ${!ehResp})"><i class="bi ${ehResp ? "bi-star" : "bi-star-fill"}"></i> ${ehResp ? "Retirar como responsável" : "Tornar responsável"}</button>` +
+        `<button type="button" class="btn btn-perigo" onclick="removerMembroDoProjeto('${userId}')"><i class="bi bi-person-x"></i> Remover do projeto</button>`;
+    }
+  } catch (err) {
+    document.getElementById("pm-estado").textContent = "Indisponível";
+    document.getElementById("pm-visto").textContent = "Indisponível";
+    document.getElementById("pm-tarefas").innerHTML = `<div class="sub">Não foi possível carregar os detalhes. Reinicie o servidor (npm start) para aplicar a última versão e tente novamente.</div>`;
+    console.error("Perfil do membro:", err);
+  }
+}
+async function atribuirResponsavelDoPerfil(userId, tornar) {
+  const m = estado.membros.find((x) => x.id === userId);
+  if (!m) return;
+  const pergunta = tornar
+    ? `Tornar ${m.name} responsável deste projeto? Passa a poder criar tarefas, gerir o quadro e aceder ao Espaço de gestão.`
+    : `Retirar ${m.name} de responsável? Volta a ser membro e perde o acesso ao Espaço de gestão (se não for responsável de outro projeto).`;
+  if (!(await gpiConfirm(pergunta))) return;
+  await alternarResponsavel(userId, tornar);
+  if (document.getElementById("overlay-membro").classList.contains("open")) abrirPerfilMembro(userId);
+}
+function fecharPerfilMembro() { document.getElementById("overlay-membro").classList.remove("open"); }
+
+async function removerMembroDoProjeto(userId) {
+  const m = estado.membros.find((x) => x.id === userId);
+  if (!m) return;
+  if (!(await gpiConfirm(`Remover ${m.name} do projeto "${estado.projeto?.name || ""}"? Deixará de ter acesso a ele.`))) return;
+  try {
+    await api.del(`/api/projects/${projectId}/membros/${userId}`);
+    estado.membros = estado.membros.filter((x) => x.id !== userId);
+    renderizarMembros();
+    fecharPerfilMembro();
+    mostrarToast(`${m.name} foi removido(a) do projeto.`);
+  } catch (err) {
+    mostrarToast(err.message);
+  }
 }
 
 // ---------------- Seletor rápido de projeto ----------------
@@ -219,7 +427,7 @@ function exportarQuadro(formato) {
 // concreto). Se for o único responsável, o servidor recusa e pede para
 // tornar outra pessoa responsável primeiro (ver "Responsável" acima).
 async function sairDoProjeto() {
-  if (!confirm(`Sair do projeto "${estado.projeto?.name || ""}"? Deixará de ter acesso a ele.`)) return;
+  if (!(await gpiConfirm(`Sair do projeto "${estado.projeto?.name || ""}"? Deixará de ter acesso a ele.`))) return;
   try {
     await api.del(`/api/projects/${projectId}/membros/${eu.id}`);
     mostrarToast("Saiu do projeto.");
@@ -305,14 +513,14 @@ function renderizarQuadro() {
 
     colEl.innerHTML = `
       <div class="column-head">
-        <h4>${col.name}${col.is_done ? ' <span title="Coluna de tarefas concluídas" style="color:var(--success)">✓</span>' : ""}${col.restricted ? ' <span title="Restrita a responsáveis e administradores" style="color:var(--warn)">🔒</span>' : ""}</h4>
+        <h4>${col.name}${col.is_done ? ' <span title="Coluna de tarefas concluídas" style="color:var(--success)">✓</span>' : ""}${col.restricted ? ' <span title="Restrita a responsáveis e administradores" style="color:var(--warn)">🔒</span>' : ""}${col.timer_start ? ' <span title="Inicia o registo de tempo das tarefas que entram aqui" style="color:var(--cyan)">⏱️</span>' : ""}</h4>
         <div style="display:flex;align-items:center;gap:8px">
           <span class="column-count">${tarefasCol.length}</span>
           ${menuGestao}
         </div>
       </div>
       <div class="cards-zone" data-col-id="${col.id}"></div>
-      <button class="add-task-btn" onclick="abrirModalTarefa('${col.id}')">+ Adicionar tarefa</button>
+      ${souDonoDoProjeto() ? `<button class="add-task-btn" onclick="abrirModalTarefa('${col.id}')">+ Adicionar tarefa</button>` : ""}
     `;
     container.appendChild(colEl);
 
@@ -442,6 +650,8 @@ function abrirModalColuna(coluna = null) {
   document.getElementById("coluna-nome").value = coluna ? coluna.name : "";
   document.getElementById("coluna-is-done").checked = coluna ? !!coluna.is_done : false;
   document.getElementById("coluna-restricted").checked = coluna ? !!coluna.restricted : false;
+  document.getElementById("coluna-timer").checked = coluna ? !!coluna.timer_start : false;
+  sincronizarOpcaoTimerColuna();
   document.getElementById("erro-coluna").style.display = "none";
 
   document.getElementById("sugestoes-nome-coluna").innerHTML = SUGESTOES_NOME_COLUNA.map((s) => `
@@ -449,6 +659,17 @@ function abrirModalColuna(coluna = null) {
   `).join("");
 
   document.getElementById("overlay-coluna").classList.add("open");
+}
+// Colunas concluídas ou protegidas nunca contam tempo: a opção fica desligada e bloqueada
+function sincronizarOpcaoTimerColuna() {
+  const bloqueada = document.getElementById("coluna-is-done").checked || document.getElementById("coluna-restricted").checked;
+  const cb = document.getElementById("coluna-timer");
+  if (bloqueada) cb.checked = false;
+  cb.disabled = bloqueada;
+  document.getElementById("campo-coluna-timer").style.opacity = bloqueada ? ".5" : "1";
+  document.getElementById("coluna-timer-nota").textContent = bloqueada
+    ? "Indisponível: o registo de tempo não conta em colunas concluídas nem protegidas."
+    : "Conta para o responsável da tarefa. Nunca conta em colunas concluídas ou protegidas.";
 }
 function fecharModalColuna() {
   document.getElementById("overlay-coluna").classList.remove("open");
@@ -460,7 +681,7 @@ function renomearColuna(colId) {
   if (coluna) abrirModalColuna(coluna);
 }
 async function eliminarColuna(colId) {
-  if (!confirm("Eliminar esta coluna? Só é possível se estiver vazia.")) return;
+  if (!(await gpiConfirm("Eliminar esta coluna? Só é possível se estiver vazia."))) return;
   try {
     await api.del(`/api/projects/colunas/${colId}`);
     estado.colunas = estado.colunas.filter((c) => c.id !== colId);
@@ -479,7 +700,7 @@ function ligarControlosProjeto() {
   });
   document.getElementById("btn-eliminar-projeto").addEventListener("click", async () => {
     const nomeProjeto = document.getElementById("nome-projeto").textContent;
-    if (!confirm(`Eliminar definitivamente o projeto "${nomeProjeto}"? Todas as tarefas, comentários e etiquetas serão perdidos. Esta ação não pode ser revertida.`)) return;
+    if (!(await gpiConfirm(`Eliminar definitivamente o projeto "${nomeProjeto}"? Todas as tarefas, comentários e etiquetas serão perdidos. Esta ação não pode ser revertida.`))) return;
     try {
       await api.del(`/api/projects/${projectId}`);
       window.location.href = "/projetos.html";
@@ -518,6 +739,9 @@ function conectarSocket() {
   iniciarNotificacoes(socket);
 
   socket.on("presence:update", (utilizadores) => {
+    idsOnline = new Set(utilizadores.map((u) => u.id));
+    if (estado && estado.membros) renderizarMembros();
+    if (document.getElementById("view-equipa")?.style.display !== "none") renderizarEquipa();
     const wrap = document.getElementById("presenca");
     wrap.innerHTML = utilizadores
       .map((u) => `<div class="avatar" style="background:${corPara(u.id)}" title="${u.name}">${iniciais(u.name)}</div>`)
@@ -653,6 +877,12 @@ function conectarSocket() {
   });
 
   socket.on("channel:message", (m) => {
+    // Mensagem de outra conversa (outro grupo, ou geral): só marca como não lida.
+    if ((m.group_id || null) !== grupoAtivo) {
+      gruposNaoLidos.add(m.group_id || "geral");
+      renderizarGruposCanal();
+      return;
+    }
     mensagensCanalCache.push(m);
     // Uma mensagem nova só aparece de imediato se não houver pesquisa ativa
     // a escondê-la — caso contrário ficaria visível mesmo sem bater com o
@@ -660,7 +890,8 @@ function conectarSocket() {
     if (!document.getElementById("channel-pesquisa")?.value.trim()) {
       const feed = document.getElementById("channel-feed");
       feed.insertAdjacentHTML("beforeend", criarBolhaCanal(m));
-      feed.scrollTop = feed.scrollHeight;
+      feed.lastElementChild?.classList.add("nova");
+      feed.scrollTo({ top: feed.scrollHeight, behavior: "smooth" });
     }
   });
 
@@ -685,7 +916,9 @@ function conectarSocket() {
   socket.on("channel:message-deleted", ({ id, escopo }) => {
     if (escopo !== "todos") return; // "para mim" só afeta quem pediu, via resposta direta do pedido
     const cache = mensagensCanalCache.find((m) => m.id === id);
-    if (cache) cache.deleted_at = new Date().toISOString();
+    if (cache) { cache.deleted_at = new Date().toISOString(); cache.pinned_at = null; renderizarFixadas(); }
+    mensagensSelecionadas.delete(id);
+    atualizarBarraSelecao();
     const el = document.querySelector(`.channel-msg[data-msg-id="${id}"]`);
     if (!el) return;
     el.classList.add("eliminada");
@@ -694,12 +927,35 @@ function conectarSocket() {
     el.querySelector(".channel-msg-acoes")?.remove();
   });
 
-  socket.on("channel:digitando", ({ user }) => {
+  socket.on("channel:digitando", ({ user, grupoId }) => {
+    if ((grupoId || null) !== grupoAtivo) return;
     if (document.getElementById("view-conversa").style.display === "none") return;
     const ind = document.getElementById("channel-digitando");
     ind.innerHTML = `<span class="typing-dots"><span></span><span></span><span></span></span>${user} está a escrever…`;
     clearTimeout(timeoutDigitandoCanal);
     timeoutDigitandoCanal = setTimeout(() => (ind.innerHTML = ""), 2200);
+  });
+
+  socket.on("channel:pin", ({ id, pinned_at, pinned_by_nome }) => {
+    const cache = mensagensCanalCache.find((m) => m.id === id);
+    if (!cache) return;
+    cache.pinned_at = pinned_at;
+    cache.pinned_by_nome = pinned_by_nome;
+    atualizarMarcaFixada(id);
+    renderizarFixadas();
+  });
+
+  socket.on("channel:group-changed", async ({ removido }) => {
+    if (!vistasCarregadas.has("conversa")) return;
+    await carregarGruposCanal();
+    if (removido && removido === grupoAtivo) {
+      mostrarToast("Já não faz parte deste grupo.");
+      await selecionarGrupo(null);
+    } else if (grupoAtivo && !gruposCanal.some((g) => g.id === grupoAtivo)) {
+      await selecionarGrupo(null);
+    } else {
+      renderizarGruposCanal();
+    }
   });
 
   socket.on("channel:reaction", ({ messageId, reacoes }) => {
@@ -712,7 +968,7 @@ function conectarSocket() {
   socket.on("column:created", (coluna) => {
     if (coluna.restricted && !souDonoDoProjeto()) return;
     if (coluna.is_done) estado.colunas.forEach((c) => (c.is_done = false));
-    estado.colunas.push(coluna);
+    if (!estado.colunas.some((c) => c.id === coluna.id)) estado.colunas.push(coluna); // quem a criou já a tem
     renderizarQuadro();
   });
   socket.on("column:updated", (coluna) => {
@@ -740,10 +996,94 @@ function conectarSocket() {
     if (autor !== eu.name) mostrarToast(`${autor} atualizou os dados do projeto.`);
   });
 
-  socket.on("project:deleted", ({ autor }) => {
-    alert(`${autor} eliminou este projeto. Vai ser redirecionado(a) para a lista de projetos.`);
-    window.location.href = "/projetos.html";
+  // Qualquer alteração ao projeto/tarefas feita por outra pessoa (sobretudo por
+  // responsáveis e administradores): volta a pedir o quadro, que o servidor já
+  // filtra pelas regras de visibilidade, e atualiza o que está no ecrã.
+  socket.on("projeto:alterado", ({ autorId }) => {
+    if (autorId && autorId === eu.id) return;
+    agendarSincronizacao();
   });
+
+  // Registo de tempo iniciado/parado automaticamente (coluna, automação ou coluna concluída)
+  socket.on("tempo:iniciado", ({ taskId }) => { if (tarefaAtiva && tarefaAtiva.id === taskId) carregarCronometro(taskId); mostrarToast("⏱️ O registo de tempo começou a contar numa das suas tarefas."); });
+  socket.on("tempo:parado", ({ taskId }) => { if (tarefaAtiva && tarefaAtiva.id === taskId) carregarCronometro(taskId); });
+
+  socket.on("task:tempo-registado", ({ taskId }) => { if (tarefaAtiva && tarefaAtiva.id === taskId) carregarCronometro(taskId); });
+
+  socket.on("project:deleted", ({ autor }) => {
+    gpiAviso(`${autor} eliminou este projeto. Vai ser redirecionado(a) para a lista de projetos.`, "Projeto eliminado").then(() => (window.location.href = "/projetos.html"));
+  });
+}
+
+// ---------------- Sincronização em tempo real ----------------
+let temporizadorSync = null, aSincronizar = false, sincronizarDeNovo = false;
+function agendarSincronizacao() {
+  clearTimeout(temporizadorSync);
+  temporizadorSync = setTimeout(sincronizarProjeto, 350);
+}
+
+async function sincronizarProjeto() {
+  if (aSincronizar) { sincronizarDeNovo = true; return; }
+  aSincronizar = true;
+  try {
+    const guardar = ["filtro-responsavel", "nt-responsavel", "et-responsavel"].map((id) => [id, document.getElementById(id)?.value]);
+    const eraGestor = souDonoDoProjeto();
+    const podiaEditar = tarefaAtiva ? podeGerirTarefa(tarefaAtiva) : false;
+
+    await carregarQuadro(true);
+    guardar.forEach(([id, v]) => { const el = document.getElementById(id); if (el && v !== undefined) el.value = v; });
+    carregarEtiquetas().catch(() => {});
+
+    // Permissões mudaram (ex.: passou a responsável ou deixou de o ser)
+    const btnEditar = document.getElementById("btn-editar-projeto"), btnElim = document.getElementById("btn-eliminar-projeto");
+    const gestor = souDonoDoProjeto();
+    if (btnEditar) btnEditar.style.display = gestor ? "inline" : "none";
+    if (btnElim) btnElim.style.display = gestor ? "inline" : "none";
+    document.getElementById("bloco-campos-personalizados").style.display = gestor ? "block" : "none";
+    document.getElementById("bloco-espaco-gestao").style.display = gestor ? "block" : "none";
+    carregarPedidosConvite();
+    if (eraGestor !== gestor && document.getElementById("view-automacoes").style.display !== "none") carregarAutomacoes();
+
+    // Vista que está aberta
+    const vista = document.querySelector(".view-tab.active")?.dataset.view;
+    if (vista === "lista") renderizarListaTarefas();
+    else if (vista === "calendario") renderizarCalendario();
+    else if (vista === "gantt") renderizarGantt();
+    else if (vista === "metas") await carregarMetas();
+    else if (vista === "equipa") renderizarEquipa();
+    else if (vista === "automacoes") await carregarAutomacoes();
+    if (document.getElementById("overlay-dia")?.classList.contains("open")) renderizarListaModalDia?.();
+
+    // Tarefa aberta no detalhe
+    if (tarefaAtiva) {
+      const atual = estado.tarefas.find((t) => t.id === tarefaAtiva.id);
+      if (!atual) {
+        fecharModalDetalhe();
+        mostrarToast("Esta tarefa foi eliminada ou já não está visível para si.");
+      } else {
+        const id = atual.id;
+        Object.assign(tarefaAtiva, atual);
+        if (podeGerirTarefa(tarefaAtiva) !== podiaEditar) {
+          await abrirModalDetalhe(id); // mudou entre só-leitura e editável
+        } else {
+          const podeInteragir = podeInteragirComTarefaAtiva();
+          const aEscrever = document.activeElement && document.getElementById("det-campos-personalizados")?.contains(document.activeElement);
+          await Promise.all([
+            aEscrever ? null : carregarCamposPersonalizadosTarefa(id, podeInteragir),
+            carregarDependencias(id, podeInteragir),
+            carregarSubtarefas(id, podeInteragir),
+            typeof carregarResponsaveisExtra === "function" ? carregarResponsaveisExtra(id).catch(() => {}) : null,
+          ]);
+          renderizarEtiquetasDetalhe();
+        }
+      }
+    }
+  } catch (err) {
+    console.error("Erro ao sincronizar o projeto:", err);
+  } finally {
+    aSincronizar = false;
+    if (sincronizarDeNovo) { sincronizarDeNovo = false; agendarSincronizacao(); }
+  }
 }
 
 let checklistAtiva = [];
@@ -803,10 +1143,18 @@ function formatarDataPt(iso) {
 // ---------------- Modal: nova tarefa ----------------
 function abrirModalTarefa(colId) {
   document.getElementById("nt-coluna").value = colId;
+  // Projeto com um único membro: ele é, por omissão, o responsável da tarefa
+  if (estado.membros.length === 1) document.getElementById("nt-responsavel").value = estado.membros[0].id;
   etiquetasSelecionadasNaTarefaNova = new Set();
   checklistNovaTarefa = [];
   renderizarChecklistNovaTarefa();
   document.getElementById("campo-nt-checklist").style.display = souDonoDoProjeto() ? "block" : "none";
+  // Grupo de conversa da tarefa (só responsáveis do projeto/admin)
+  document.getElementById("campo-nt-grupo").style.display = souDonoDoProjeto() ? "block" : "none";
+  document.getElementById("nt-grupo-ativo").checked = false;
+  document.getElementById("nt-grupo-opcoes").style.display = "none";
+  document.getElementById("nt-grupo-nome").value = "";
+  renderizarSeletorMembros("nt-grupo-membros", estado.membros, new Set([eu.id]), new Set([eu.id]));
   document.getElementById("nt-etiquetas").innerHTML = etiquetasProjeto.map((l) => `
     <span class="chip-toggle" data-id="${l.id}" style="cursor:pointer;user-select:none;background:transparent;color:${l.color};border:1px solid ${l.color};font-size:11px;font-weight:700;padding:3px 9px;border-radius:20px">${l.name}</span>
   `).join("") || `<span style="font-size:12px;color:var(--ink-faint)">Sem etiquetas no projeto ainda.</span>`;
@@ -829,6 +1177,7 @@ function abrirModalTarefa(colId) {
 function fecharModalTarefa() {
   document.getElementById("overlay-tarefa").classList.remove("open");
   document.getElementById("form-nova-tarefa").reset();
+  document.getElementById("nt-grupo-opcoes").style.display = "none";
   checklistNovaTarefa = [];
 }
 
@@ -855,12 +1204,15 @@ function removerItemChecklistNovaTarefa(i) {
   renderizarChecklistNovaTarefa();
 }
 
-// ---------------- Modal: convidar membro (pesquisa + filtro) ----------------
+// ---------------- Modal: convidar membros (pesquisa + seleção múltipla) ----------------
 let convDebounce = null;
+const convSelecionados = new Map(); // id -> utilizador (a seleção sobrevive a novas pesquisas)
 function abrirModalConvite() {
   document.getElementById("overlay-convite").classList.add("open");
   document.getElementById("conv-pesquisa").value = "";
   document.getElementById("conv-ordenar").value = "nome_asc";
+  convSelecionados.clear();
+  atualizarBarraConvite();
   pesquisarUtilizadoresParaConvidar();
   document.getElementById("conv-pesquisa").focus();
 }
@@ -877,35 +1229,83 @@ async function pesquisarUtilizadoresParaConvidar() {
   try {
     resultadosConviteAtuais = await api.get(`/api/projects/${projectId}/utilizadores-disponiveis?search=${encodeURIComponent(search)}&sort=${sort}`);
     resultados.innerHTML = resultadosConviteAtuais.map((u) => `
-      <div class="tarefa-dia-item" onclick="convidarUtilizador('${u.id}')">
+      <label class="conv-item ${convSelecionados.has(u.id) ? "sel" : ""}" data-id="${u.id}">
+        <input type="checkbox" ${convSelecionados.has(u.id) ? "checked" : ""} />
         <div class="avatar" style="width:28px;height:28px;font-size:11px;background:${u.avatar_color || corPara(u.id)}">${iniciais(u.name)}</div>
-        <div style="flex:1">
-          <div style="font-size:13px;font-weight:600">${u.name}</div>
-          <div style="font-size:11px;color:var(--ink-faint)">${u.email}</div>
+        <div style="flex:1;min-width:0">
+          <div style="font-size:13px;font-weight:600;overflow-wrap:anywhere">${escaparHtml(u.name)}</div>
+          <div style="font-size:11px;color:var(--ink-faint);overflow-wrap:anywhere">${escaparHtml(u.email)}</div>
         </div>
-        <span style="font-size:11px;color:var(--cyan)">Convidar →</span>
-      </div>
+      </label>
     `).join("") || `<div class="sub" style="text-align:center;padding:16px 0">Sem resultados.</div>`;
+    resultados.querySelectorAll(".conv-item input").forEach((cb) => {
+      cb.addEventListener("change", () => {
+        const item = cb.closest(".conv-item");
+        const u = resultadosConviteAtuais.find((x) => x.id === item.dataset.id);
+        if (!u) return;
+        if (cb.checked) convSelecionados.set(u.id, u); else convSelecionados.delete(u.id);
+        item.classList.toggle("sel", cb.checked);
+        atualizarBarraConvite();
+      });
+    });
+    atualizarBarraConvite();
   } catch (err) {
-    resultados.innerHTML = `<div class="sub" style="text-align:center;padding:16px 0">${err.message}</div>`;
+    resultados.innerHTML = `<div class="sub" style="text-align:center;padding:16px 0">${escaparHtml(err.message)}</div>`;
   }
 }
 
-async function convidarUtilizador(userId) {
+function atualizarBarraConvite() {
+  const n = convSelecionados.size;
+  document.getElementById("conv-contagem").textContent = n === 0 ? "Nenhum selecionado" : n === 1 ? "1 selecionado" : `${n} selecionados`;
+  document.getElementById("conv-limpar").style.display = n ? "" : "none";
+  const botao = document.getElementById("conv-enviar");
+  botao.disabled = n === 0;
+  const gestor = souDonoDoProjeto();
+  botao.textContent = n === 0 ? "Convidar selecionados"
+    : gestor ? `Convidar ${n} ${n === 1 ? "pessoa" : "pessoas"}` : `Propor convite a ${n} ${n === 1 ? "pessoa" : "pessoas"}`;
+  const todos = document.getElementById("conv-todos");
+  const visiveis = resultadosConviteAtuais.length;
+  const marcadosVisiveis = resultadosConviteAtuais.filter((u) => convSelecionados.has(u.id)).length;
+  todos.checked = visiveis > 0 && marcadosVisiveis === visiveis;
+  todos.indeterminate = marcadosVisiveis > 0 && marcadosVisiveis < visiveis;
+  todos.disabled = visiveis === 0;
+}
+
+async function convidarSelecionados() {
   const erroBox = document.getElementById("erro-convite");
   erroBox.style.display = "none";
-  const alvo = resultadosConviteAtuais.find((u) => u.id === userId);
-  if (!alvo) return;
-  try {
-    const resp = await api.post(`/api/projects/${projectId}/membros`, { email: alvo.email });
-    mostrarToast(resp.status === "aguarda_aprovacao"
-      ? `Pedido enviado ao responsável do projeto para aprovar o convite a ${alvo.name}.`
-      : `Convite enviado a ${alvo.name}.`);
-    fecharModalConvite();
-  } catch (err) {
-    erroBox.textContent = err.message;
-    erroBox.style.display = "block";
+  const alvos = [...convSelecionados.values()];
+  if (alvos.length === 0) return;
+  const botao = document.getElementById("conv-enviar");
+  botao.disabled = true;
+  botao.textContent = "A enviar…";
+
+  let feitos = 0, aguardam = 0;
+  const falhas = [];
+  for (const alvo of alvos) {
+    try {
+      const resp = await api.post(`/api/projects/${projectId}/membros`, { email: alvo.email });
+      feitos++;
+      if (resp.status === "aguarda_aprovacao") aguardam++;
+      convSelecionados.delete(alvo.id);
+    } catch (err) {
+      falhas.push(`${alvo.name}: ${err.message}`);
+    }
   }
+
+  if (falhas.length === 0) {
+    mostrarToast(aguardam === feitos
+      ? (feitos === 1 ? `Pedido enviado ao responsável do projeto para aprovar o convite a ${alvos[0].name}.` : `${feitos} pedidos enviados ao responsável do projeto para aprovação.`)
+      : (feitos === 1 ? `Convite enviado a ${alvos[0].name}.` : `${feitos} convites enviados.`));
+    fecharModalConvite();
+  } else {
+    // Mantém aberta só com quem falhou, para tentar de novo ou corrigir
+    if (feitos) mostrarToast(`${feitos} ${feitos === 1 ? "convite enviado" : "convites enviados"}.`);
+    erroBox.innerHTML = falhas.map(escaparHtml).join("<br/>");
+    erroBox.style.display = "block";
+    pesquisarUtilizadoresParaConvidar();
+  }
+  atualizarBarraConvite();
 }
 
 // ---------------- Modal: detalhe + edição + comentários + checklist ----------------
@@ -913,6 +1313,7 @@ async function abrirModalDetalhe(taskId) {
   tarefaAtiva = estado.tarefas.find((t) => t.id === taskId);
   if (!tarefaAtiva) return;
 
+  atualizarBotaoGrupoTarefa();
   const editavel = podeGerirTarefa(tarefaAtiva);
   document.getElementById("det-vista-leitura").style.display = editavel ? "none" : "block";
   document.getElementById("form-editar-tarefa").style.display = editavel ? "block" : "none";
@@ -1048,7 +1449,7 @@ async function carregarDependencias(taskId, podeInteragir) {
     lista.innerHTML = dependencias.map((d) => `
       <span class="dependencia-chip ${d.concluida ? "concluida" : "bloqueada"}">
         ${d.concluida ? "✓" : "⏳"} ${escaparHtml(d.title)}
-        ${podeInteragir ? `<span data-rem-dep="${d.id}" style="cursor:pointer">✕</span>` : ""}
+        ${souDonoDoProjeto() ? `<span data-rem-dep="${d.id}" style="cursor:pointer">✕</span>` : ""}
       </span>
     `).join("") || `<p class="sub" style="margin:0">Esta tarefa não depende de nenhuma outra.</p>`;
 
@@ -1067,7 +1468,7 @@ async function carregarDependencias(taskId, podeInteragir) {
     const idsJaDependentes = new Set(dependencias.map((d) => d.id));
     const opcoes = estado.tarefas.filter((t) => t.id !== taskId && !idsJaDependentes.has(t.id) && !t.parent_task_id);
     select.innerHTML = opcoes.map((t) => `<option value="${t.id}">${escaparHtml(t.title)}</option>`).join("");
-    if (linha) linha.style.display = podeInteragir ? "flex" : "none";
+    if (linha) linha.style.display = souDonoDoProjeto() ? "flex" : "none";
   } catch (err) {
     console.error("Erro ao carregar dependências:", err);
   }
@@ -1105,7 +1506,7 @@ async function carregarSubtarefas(taskId, podeInteragir) {
       el.addEventListener("click", () => abrirModalDetalhe(el.dataset.abrirSub));
     });
 
-    if (form) form.style.display = podeInteragir ? "flex" : "none";
+    if (form) form.style.display = souDonoDoProjeto() ? "flex" : "none";
   } catch (err) {
     console.error("Erro ao carregar subtarefas:", err);
   }
@@ -1148,24 +1549,58 @@ async function carregarCronometro(taskId) {
   if (!botao || !display) return;
   if (intervaloCronometro) { clearInterval(intervaloCronometro); intervaloCronometro = null; }
   try {
-    const { total_segundos, a_correr } = await api.get(`/api/tasks/${taskId}/tempo`);
-    const atualizarTexto = (segundosBase, desde) => {
-      const extra = desde ? Math.floor((Date.now() - new Date(desde).getTime()) / 1000) : 0;
-      display.textContent = formatarDuracao(segundosBase + extra);
-    };
-    if (a_correr) {
-      botao.textContent = "⏸️ Parar";
-      botao.dataset.entryId = a_correr.id;
-      const base = total_segundos - Math.floor((Date.now() - new Date(a_correr.started_at).getTime()) / 1000);
-      atualizarTexto(base, a_correr.started_at);
-      intervaloCronometro = setInterval(() => atualizarTexto(base, a_correr.started_at), 1000);
-    } else {
-      botao.textContent = "▶️ Iniciar";
-      delete botao.dataset.entryId;
-      display.textContent = formatarDuracao(total_segundos);
+    const { total_segundos, a_correr, a_correr_todos = [], agora } = await api.get(`/api/tasks/${taskId}/tempo`);
+    const colTarefa = estado.colunas.find((c) => c.id === tarefaAtiva?.column_id);
+    const bloqueada = !!colTarefa && (colTarefa.is_done || colTarefa.restricted);
+    const automatica = !!colTarefa && !!colTarefa.timer_start && !bloqueada;
+    const podeUsar = podeInteragirComTarefaAtiva();
+    const reiniciar = document.getElementById("btn-cron-reiniciar");
+    const aviso = document.getElementById("cron-aviso");
+
+    // "Iniciar" e "Reiniciar" ficam inativos em colunas bloqueadas e em colunas de registo automático ("Parar" continua disponível)
+    botao.style.display = podeUsar ? "" : "none";
+    botao.disabled = !a_correr && (bloqueada || automatica);
+    if (reiniciar) {
+      reiniciar.style.display = podeUsar ? "" : "none";
+      reiniciar.disabled = bloqueada || automatica || (total_segundos === 0 && a_correr_todos.length === 0);
     }
+    if (aviso) {
+      aviso.style.display = bloqueada || automatica ? "block" : "none";
+      aviso.textContent = bloqueada
+        ? "⏸️ O registo de tempo não conta em colunas protegidas nem em colunas concluídas."
+        : "⏱️ Nesta coluna o registo de tempo é automático (começa quando a tarefa entra na coluna).";
+    }
+
+    // Relógio ao vivo (hh:mm:ss), corrigido pela hora do servidor
+    const desvio = (agora || Date.now()) - Date.now();
+    const inicios = a_correr_todos.map((r) => new Date(r.started_at).getTime());
+    const decorrido = (hora) => inicios.reduce((soma, i) => soma + Math.max(0, Math.floor((hora - i) / 1000)), 0);
+    const base = total_segundos - decorrido(agora || Date.now());
+    const desenhar = () => { display.textContent = formatarRelogio(Math.max(0, base + decorrido(Date.now() + desvio))); };
+    desenhar();
+    if (inicios.length) intervaloCronometro = setInterval(desenhar, 1000);
+
+    if (a_correr) { botao.textContent = "⏸️ Parar"; botao.dataset.entryId = a_correr.id; }
+    else { botao.textContent = "▶️ Iniciar"; delete botao.dataset.entryId; }
   } catch (err) {
     console.error("Erro ao carregar o cronómetro:", err);
+  }
+}
+
+function formatarRelogio(segundos) {
+  const h = Math.floor(segundos / 3600), m = Math.floor((segundos % 3600) / 60), s = segundos % 60;
+  return [h, m, s].map((n) => String(n).padStart(2, "0")).join(":");
+}
+
+async function reiniciarCronometro() {
+  if (!tarefaAtiva) return;
+  if (!(await gpiConfirm("Reiniciar o registo de tempo desta tarefa? Todo o tempo já registado é apagado e o cronómetro pára."))) return;
+  try {
+    await api.post(`/api/tasks/${tarefaAtiva.id}/tempo/reiniciar`, {});
+    mostrarToast("Registo de tempo reiniciado.");
+    carregarCronometro(tarefaAtiva.id);
+  } catch (err) {
+    mostrarToast(err.message);
   }
 }
 
@@ -1213,7 +1648,7 @@ async function renderizarListaCamposPersonalizados() {
 
     container.querySelectorAll("[data-rem-campo]").forEach((el) => {
       el.addEventListener("click", async () => {
-        if (!confirm("Eliminar este campo personalizado? Os valores guardados nas tarefas também se perdem.")) return;
+        if (!(await gpiConfirm("Eliminar este campo personalizado? Os valores guardados nas tarefas também se perdem."))) return;
         try {
           await api.del(`/api/projects/campos/${el.dataset.remCampo}`);
           renderizarListaCamposPersonalizados();
@@ -1247,10 +1682,21 @@ document.getElementById("form-novo-campo")?.addEventListener("submit", async (e)
 });
 
 // ---------------- Metas do projeto (ClickUp) ----------------
+let metasCache = [];
 async function carregarMetas() {
-  const container = document.getElementById("metas-lista");
   try {
-    const metas = await api.get(`/api/projects/${projectId}/metas`);
+    metasCache = await api.get(`/api/projects/${projectId}/metas`);
+    renderizarMetas();
+  } catch (err) {
+    mostrarToast(err.message);
+  }
+}
+function renderizarMetas() {
+  const container = document.getElementById("metas-lista");
+  const termo = norm(document.getElementById("metas-busca").value.trim());
+  const metas = metasCache.filter((m) => !termo || norm(`${m.name} ${m.description || ""}`).includes(termo));
+  document.getElementById("metas-contagem").textContent = termo ? `${metas.length} de ${metasCache.length}` : `${metasCache.length} meta(s)`;
+  {
     container.innerHTML = metas.map((m) => `
       <div class="meta-card">
         <div class="meta-card-topo">
@@ -1269,11 +1715,11 @@ async function carregarMetas() {
             ${estado.tarefas.filter((t) => !t.parent_task_id).map((t) => `<option value="${t.id}">${escaparHtml(t.title)}</option>`).join("")}
           </select>` : ""}
       </div>
-    `).join("") || `<p class="sub">Ainda não há metas definidas para este projeto.</p>`;
+    `).join("") || `<p class="sub">${metasCache.length ? "Nenhuma meta corresponde à pesquisa." : "Ainda não há metas definidas para este projeto."}</p>`;
 
     container.querySelectorAll("[data-rem-meta]").forEach((el) => {
       el.addEventListener("click", async () => {
-        if (!confirm("Eliminar esta meta?")) return;
+        if (!(await gpiConfirm("Eliminar esta meta?"))) return;
         try { await api.del(`/api/projects/metas/${el.dataset.remMeta}`); carregarMetas(); }
         catch (err) { mostrarToast(err.message); }
       });
@@ -1289,8 +1735,6 @@ async function carregarMetas() {
         }
       });
     });
-  } catch (err) {
-    mostrarToast(err.message);
   }
 }
 function abrirModalNovaMeta() {
@@ -1330,10 +1774,16 @@ function renderizarEtiquetasDetalhe() {
 
   if (podeGerirEtiquetas) {
     document.getElementById("nova-etiqueta-btn").addEventListener("click", async () => {
-      const nome = prompt("Nome da nova etiqueta (ex: Urgente, Backend, Design):");
-      if (!nome || !nome.trim()) return;
-      const cor = paletaCores[etiquetasProjeto.length % paletaCores.length];
-      const label = await api.post(`/api/projects/${projectId}/etiquetas`, { name: nome.trim(), color: cor });
+      const r = await gpiPrompt({
+        titulo: "Nova etiqueta", icone: "🏷️",
+        texto: "As etiquetas ajudam a organizar e filtrar as tarefas do projeto.",
+        campo: { rotulo: "Nome da etiqueta", placeholder: "Ex: Urgente, Backend, Design", maxlength: 40 },
+        cores: paletaCores, corInicial: paletaCores[etiquetasProjeto.length % paletaCores.length], confirmar: "Criar etiqueta",
+      });
+      if (!r) return;
+      let label;
+      try { label = await api.post(`/api/projects/${projectId}/etiquetas`, { name: r.valor, color: r.cor }); }
+      catch (err) { mostrarToast(err.message); return; }
       etiquetasProjeto.push(label);
       renderizarSeletorEtiquetasFiltro();
       renderizarEtiquetasDetalhe();
@@ -1341,6 +1791,7 @@ function renderizarEtiquetasDetalhe() {
   }
 
   container.querySelectorAll(".chip-toggle-det").forEach((chip) => {
+    if (!souDonoDoProjeto()) { chip.style.cursor = "default"; return; }
     chip.addEventListener("click", async () => {
       const id = chip.dataset.id;
       const atuais = new Set((tarefaAtiva.labels || []).map((l) => l.id));
@@ -1357,7 +1808,7 @@ function renderizarEtiquetasDetalhe() {
   container.querySelectorAll("[data-del-label]").forEach((el) => {
     el.addEventListener("click", async (e) => {
       e.stopPropagation();
-      if (!confirm("Eliminar esta etiqueta de todo o projeto?")) return;
+      if (!(await gpiConfirm("Eliminar esta etiqueta de todo o projeto?"))) return;
       try {
         await api.del(`/api/projects/etiquetas/${el.dataset.delLabel}`);
       } catch (err) {
@@ -1486,7 +1937,7 @@ function adicionarComentarioNaLista(c) {
   lista.scrollTop = lista.scrollHeight;
 
   el.querySelector("[data-del-comment]")?.addEventListener("click", async () => {
-    if (!confirm("Eliminar este comentário?")) return;
+    if (!(await gpiConfirm("Eliminar este comentário?"))) return;
     try {
       await api.del(`/api/comments/${c.id}`);
       el.remove();
@@ -1498,6 +1949,7 @@ function adicionarComentarioNaLista(c) {
 
 // ---------------- Formulários ----------------
 function ligarFormularios() {
+  ["coluna-is-done", "coluna-restricted"].forEach((id) => document.getElementById(id).addEventListener("change", sincronizarOpcaoTimerColuna));
   document.getElementById("form-coluna").addEventListener("submit", async (e) => {
     e.preventDefault();
     const erroBox = document.getElementById("erro-coluna");
@@ -1505,16 +1957,17 @@ function ligarFormularios() {
     const nome = document.getElementById("coluna-nome").value.trim();
     const isDone = document.getElementById("coluna-is-done").checked;
     const restricted = document.getElementById("coluna-restricted").checked;
+    const timer_start = !isDone && !restricted && document.getElementById("coluna-timer").checked;
     if (!nome) return;
 
     try {
       if (colunaEmEdicao) {
-        const atualizada = await api.patch(`/api/projects/colunas/${colunaEmEdicao}`, { name: nome, is_done: isDone, restricted });
+        const atualizada = await api.patch(`/api/projects/colunas/${colunaEmEdicao}`, { name: nome, is_done: isDone, restricted, timer_start });
         estado.colunas = estado.colunas.map((c) => (c.id === atualizada.id ? { ...c, ...atualizada } : (isDone ? { ...c, is_done: false } : c)));
       } else {
-        const nova = await api.post(`/api/projects/${projectId}/colunas`, { name: nome, is_done: isDone, restricted });
+        const nova = await api.post(`/api/projects/${projectId}/colunas`, { name: nome, is_done: isDone, restricted, timer_start });
         if (isDone) estado.colunas = estado.colunas.map((c) => ({ ...c, is_done: false }));
-        estado.colunas.push(nova);
+        if (!estado.colunas.some((c) => c.id === nova.id)) estado.colunas.push(nova);
       }
       renderizarQuadro();
       fecharModalColuna();
@@ -1525,6 +1978,22 @@ function ligarFormularios() {
   });
 
   let aCriarTarefa = false;
+  document.getElementById("nt-grupo-ativo").addEventListener("change", (e) => {
+    const op = document.getElementById("nt-grupo-opcoes");
+    op.style.display = e.target.checked ? "block" : "none";
+    if (e.target.checked) {
+      const resp = document.getElementById("nt-responsavel").value;
+      const cb = resp && document.querySelector(`#nt-grupo-membros input[value="${resp}"]`);
+      if (cb && !cb.checked) { cb.checked = true; cb.dispatchEvent(new Event("change")); }
+      document.getElementById("nt-grupo-nome").focus();
+    }
+  });
+  document.getElementById("nt-responsavel").addEventListener("change", (e) => {
+    if (!document.getElementById("nt-grupo-ativo").checked || !e.target.value) return;
+    const cb = document.querySelector(`#nt-grupo-membros input[value="${e.target.value}"]`);
+    if (cb && !cb.checked) { cb.checked = true; cb.dispatchEvent(new Event("change")); }
+  });
+
   document.getElementById("form-nova-tarefa").addEventListener("submit", async (e) => {
     e.preventDefault();
     // Evita criar a tarefa em duplicado se a pessoa clicar/submeter duas vezes
@@ -1552,6 +2021,18 @@ function ligarFormularios() {
       }
       estado.tarefas.push(nova);
       renderizarQuadro();
+      // Grupo de conversa da tarefa (opcional): a falha aqui não desfaz a tarefa.
+      if (document.getElementById("nt-grupo-ativo").checked && souDonoDoProjeto()) {
+        try {
+          const { member_ids, responsavel_ids } = lerSeletorMembros("nt-grupo-membros");
+          const nome = document.getElementById("nt-grupo-nome").value.trim() || `Tarefa: ${nova.title}`.slice(0, 80);
+          await api.post(`/api/projects/${projectId}/grupos`, { name: nome, task_id: nova.id, member_ids, responsavel_ids });
+          mostrarToast(`Tarefa e grupo "${nome}" criados.`);
+          if (vistasCarregadas.has("conversa")) carregarGruposCanal();
+        } catch (errGrupo) {
+          mostrarToast(`Tarefa criada, mas o grupo falhou: ${errGrupo.message}`);
+        }
+      }
       fecharModalTarefa();
     } catch (err) {
       mostrarToast(err.message);
@@ -1586,7 +2067,7 @@ function ligarFormularios() {
 
   document.getElementById("btn-eliminar-tarefa").addEventListener("click", async () => {
     if (!tarefaAtiva) return;
-    if (!confirm(`Eliminar definitivamente a tarefa "${tarefaAtiva.title}"?`)) return;
+    if (!(await gpiConfirm(`Eliminar definitivamente a tarefa "${tarefaAtiva.title}"?`))) return;
     try {
       await api.del(`/api/tasks/${tarefaAtiva.id}`);
       estado.tarefas = estado.tarefas.filter((t) => t.id !== tarefaAtiva.id);
@@ -1611,10 +2092,22 @@ function ligarFormularios() {
   });
 
   document.getElementById("channel-input").addEventListener("input", () => {
-    socket.emit("channel:digitando", { projectId });
+    socket.emit("channel:digitando", { projectId, grupoId: grupoAtivo });
   });
 
   document.getElementById("channel-pesquisa").addEventListener("input", () => renderizarFeedCanal());
+  const ligaFiltro = (id, fn, ev = "input") => document.getElementById(id).addEventListener(ev, fn);
+  ["lista-busca"].forEach((id) => ligaFiltro(id, debounce(renderizarListaTarefas)));
+  ["lista-f-coluna", "lista-f-prio"].forEach((id) => ligaFiltro(id, renderizarListaTarefas, "change"));
+  document.getElementById("lista-limpar").addEventListener("click", () => {
+    ["lista-busca", "lista-f-coluna", "lista-f-prio"].forEach((id) => (document.getElementById(id).value = ""));
+    renderizarListaTarefas();
+  });
+  ligaFiltro("dia-busca", debounce(renderizarListaModalDia, 120));
+  ligaFiltro("metas-busca", debounce(renderizarMetas));
+  ligaFiltro("auto-busca", debounce(renderizarAutomacoes));
+  iniciarFiltrosCalendario();
+  document.getElementById("btn-channel-selecionar").addEventListener("click", () => (modoSelecao ? sairModoSelecao() : entrarModoSelecao()));
 
   let aAdicionarItemChecklist = false;
   document.getElementById("form-checklist").addEventListener("submit", async (e) => {
@@ -1669,6 +2162,18 @@ function ligarFormularios() {
     convDebounce = setTimeout(pesquisarUtilizadoresParaConvidar, 250);
   });
   document.getElementById("conv-ordenar").addEventListener("change", pesquisarUtilizadoresParaConvidar);
+  document.getElementById("equipa-busca").addEventListener("input", debounce(renderizarEquipa, 120));
+  document.getElementById("conv-enviar").addEventListener("click", convidarSelecionados);
+  document.getElementById("conv-limpar").addEventListener("click", () => {
+    convSelecionados.clear();
+    document.querySelectorAll("#conv-resultados .conv-item").forEach((i) => { i.classList.remove("sel"); i.querySelector("input").checked = false; });
+    atualizarBarraConvite();
+  });
+  document.getElementById("conv-todos").addEventListener("change", (e) => {
+    resultadosConviteAtuais.forEach((u) => { if (e.target.checked) convSelecionados.set(u.id, u); else convSelecionados.delete(u.id); });
+    document.querySelectorAll("#conv-resultados .conv-item").forEach((i) => { i.classList.toggle("sel", e.target.checked); i.querySelector("input").checked = e.target.checked; });
+    atualizarBarraConvite();
+  });
 }
 
 async function sair() {
@@ -1710,30 +2215,49 @@ function ligarSeletorVistas() {
 
 function mudarVista(vista) {
   document.querySelectorAll(".view-tab").forEach((t) => t.classList.toggle("active", t.dataset.view === vista));
-  ["quadro", "lista", "calendario", "gantt", "metas", "conversa", "automacoes"].forEach((v) => {
+  ["quadro", "lista", "calendario", "gantt", "metas", "equipa", "conversa", "automacoes"].forEach((v) => {
     document.getElementById(`view-${v}`).style.display = v === vista ? "" : "none";
   });
   if (vista === "lista") renderizarListaTarefas();
   if (vista === "calendario") renderizarCalendario();
   if (vista === "gantt") renderizarGantt();
   if (vista === "metas") carregarMetas();
+  if (vista === "equipa") renderizarEquipa();
   if (vista === "conversa" && !vistasCarregadas.has("conversa")) { vistasCarregadas.add("conversa"); carregarCanal(); }
   if (vista === "automacoes" && !vistasCarregadas.has("automacoes")) { vistasCarregadas.add("automacoes"); carregarAutomacoes(); }
 }
 
+// ---------------- Pesquisa/filtros comuns ----------------
+const norm = (t) => String(t ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+const debounce = (fn, ms = 160) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
+const soData = (iso) => (iso ? String(iso).substring(0, 10) : "");
+
 // ---------------- Vista de Lista ----------------
 function renderizarListaTarefas() {
   const nomeColuna = (colId) => estado.colunas.find((c) => c.id === colId)?.name || "—";
-  document.getElementById("tbody-lista-tarefas").innerHTML = estado.tarefas.filter((t) => !t.parent_task_id).map((t, i) => `
+  const selCol = document.getElementById("lista-f-coluna");
+  if (selCol.options.length - 1 !== estado.colunas.length) {
+    const v = selCol.value;
+    selCol.innerHTML = `<option value="">Todas as colunas</option>` + estado.colunas.map((c) => `<option value="${c.id}">${escaparHtml(c.name)}</option>`).join("");
+    selCol.value = v;
+  }
+  const termo = norm(document.getElementById("lista-busca").value.trim());
+  const fCol = selCol.value, fPrio = document.getElementById("lista-f-prio").value;
+  const todas = estado.tarefas.filter((t) => !t.parent_task_id);
+  const visiveis = todas.filter((t) =>
+    (!fCol || t.column_id === fCol) && (!fPrio || t.priority === fPrio) &&
+    (!termo || norm(`${t.title} ${nomeColuna(t.column_id)} ${t.assignee_name || ""} ${t.priority}`).includes(termo)));
+  document.getElementById("lista-contagem").textContent = visiveis.length === todas.length ? `${todas.length} tarefa(s)` : `${visiveis.length} de ${todas.length}`;
+  document.getElementById("tbody-lista-tarefas").innerHTML = visiveis.map((t, i) => `
     <tr style="cursor:pointer" onclick="abrirModalDetalhe('${t.id}')">
       <td>${i + 1}</td>
-      <td style="font-weight:600">${t.title}</td>
-      <td>${nomeColuna(t.column_id)}</td>
+      <td style="font-weight:600">${escaparHtml(t.title)}</td>
+      <td>${escaparHtml(nomeColuna(t.column_id))}</td>
       <td><span class="prio prio-${t.priority}" style="display:inline-block">${t.priority}</span></td>
-      <td>${t.assignee_name || "—"}</td>
+      <td>${escaparHtml(t.assignee_name || "—")}</td>
       <td style="color:var(--ink-faint);font-size:12.5px">${t.due_date ? formatarData(t.due_date) : "—"}</td>
     </tr>
-  `).join("") || `<tr><td colspan="6" style="text-align:center;color:var(--ink-faint)">Sem tarefas neste projeto.</td></tr>`;
+  `).join("") || `<tr><td colspan="6" style="text-align:center;color:var(--ink-faint)">${todas.length ? "Nenhuma tarefa corresponde à pesquisa." : "Sem tarefas neste projeto."}</td></tr>`;
 }
 
 // ---------------- Vista de Calendário ----------------
@@ -1750,10 +2274,12 @@ function renderizarCalendario() {
   const inicioGrelha = new Date(primeiroDia);
   inicioGrelha.setDate(inicioGrelha.getDate() - primeiroDia.getDay());
 
+  sincronizarControlosCalendario();
+  const filtradas = tarefasCalendarioFiltradas();
+  const fDe = document.getElementById("cal-f-de").value, fAte = document.getElementById("cal-f-ate").value;
   const tarefasPorDia = new Map();
-  estado.tarefas.forEach((t) => {
-    if (!t.due_date || t.parent_task_id) return;
-    const chave = new Date(t.due_date).toDateString();
+  filtradas.forEach((t) => {
+    const chave = new Date(soData(t.due_date) + "T00:00:00").toDateString();
     if (!tarefasPorDia.has(chave)) tarefasPorDia.set(chave, []);
     tarefasPorDia.get(chave).push(t);
   });
@@ -1763,14 +2289,23 @@ function renderizarCalendario() {
     const dia = new Date(inicioGrelha);
     dia.setDate(dia.getDate() + i);
     const foraDoMes = dia.getMonth() !== calMesAtual;
+    const iso = `${dia.getFullYear()}-${String(dia.getMonth() + 1).padStart(2, "0")}-${String(dia.getDate()).padStart(2, "0")}`;
+    const noPeriodo = (fDe || fAte) && (!fDe || iso >= fDe) && (!fAte || iso <= fAte);
     const ehHoje = dia.toDateString() === hoje.toDateString();
     const tarefasDoDia = tarefasPorDia.get(dia.toDateString()) || [];
     const chaveDia = dia.toDateString();
+    const COR = { alta: "alta", media: "media", baixa: "baixa" };
+    const previa = tarefasDoDia.slice(0, 6).map((t) => `<div class="cal-previa-item"><span class="cal-bolinha prio-${COR[t.priority] || "media"}"></span><span>${escaparHtml(t.title)}</span></div>`).join("")
+      + (tarefasDoDia.length > 6 ? `<div class="cal-previa-mais">+${tarefasDoDia.length - 6} mais…</div>` : "");
     html += `
-      <div class="cal-day ${foraDoMes ? "fora-do-mes" : ""} ${ehHoje ? "hoje" : ""}" ${tarefasDoDia.length ? `onclick="abrirModalDia('${chaveDia}')" style="cursor:pointer"` : ""}>
+      <div class="cal-day ${foraDoMes ? "fora-do-mes" : ""} ${ehHoje ? "hoje" : ""} ${tarefasDoDia.length ? "com-tarefas" : ""} ${noPeriodo ? "no-periodo" : ""} ${(fDe || fAte) && !noPeriodo ? "fora-periodo" : ""}" data-iso="${iso}" ${tarefasDoDia.length ? `onclick="abrirModalDia('${chaveDia}')" tabindex="0" role="button" aria-label="${tarefasDoDia.length} tarefa(s) em ${dia.getDate()}"` : ""}>
         <div class="num">${dia.getDate()}</div>
-        ${tarefasDoDia.slice(0, 3).map((t) => `<div class="cal-task-chip prio-${t.priority}" onclick="event.stopPropagation();abrirModalDetalhe('${t.id}')" title="${t.title}">${t.title}</div>`).join("")}
-        ${tarefasDoDia.length > 3 ? `<div style="font-size:9.5px;color:var(--ink-faint)">+${tarefasDoDia.length - 3} mais</div>` : ""}
+        ${tarefasDoDia.length ? `
+          <div class="cal-resumo">
+            <span class="cal-contagem">${tarefasDoDia.length}</span>
+            <span class="cal-bolinhas">${tarefasDoDia.slice(0, 4).map((t) => `<span class="cal-bolinha prio-${COR[t.priority] || "media"}"></span>`).join("")}</span>
+          </div>
+          <div class="cal-previa"><div class="cal-previa-titulo">${dia.toLocaleDateString("pt-PT", { weekday: "short", day: "2-digit", month: "short" })} · ${tarefasDoDia.length} tarefa${tarefasDoDia.length > 1 ? "s" : ""}</div>${previa}<div class="cal-previa-dica">Clique para ver todas</div></div>` : ""}
       </div>`;
     if (i === 41) break;
   }
@@ -1779,22 +2314,138 @@ function renderizarCalendario() {
 }
 
 let calTarefasPorDia = new Map();
-function abrirModalDia(chaveDia) {
-  const tarefas = calTarefasPorDia.get(chaveDia) || [];
-  const dia = new Date(chaveDia);
-  document.getElementById("titulo-modal-dia").textContent = `Tarefas de ${dia.toLocaleDateString("pt-PT", { weekday: "long", day: "2-digit", month: "long" })}`;
-  document.getElementById("lista-tarefas-dia").innerHTML = tarefas.map((t) => {
+
+function idsColunasConcluidas() { return new Set(estado.colunas.filter((c) => c.is_done).map((c) => c.id)); }
+function tarefasCalendarioFiltradas() {
+  const termo = norm(document.getElementById("cal-busca").value.trim());
+  const prio = document.getElementById("cal-f-prio").value;
+  const resp = document.getElementById("cal-f-resp").value;
+  const est = document.getElementById("cal-f-estado").value;
+  const de = document.getElementById("cal-f-de").value, ate = document.getElementById("cal-f-ate").value;
+  const feitas = idsColunasConcluidas();
+  const hojeIso = new Date().toISOString().substring(0, 10);
+  const hojeLocal = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, "0")}-${String(new Date().getDate()).padStart(2, "0")}`;
+  return estado.tarefas.filter((t) => {
+    if (!t.due_date || t.parent_task_id) return false;
+    const d = soData(t.due_date);
+    if (de && d < de) return false;
+    if (ate && d > ate) return false;
+    if (prio && t.priority !== prio) return false;
+    if (resp && t.assignee_id !== resp) return false;
+    const concl = feitas.has(t.column_id);
+    if (est === "concluida" && !concl) return false;
+    if (est === "pendente" && concl) return false;
+    if (est === "atrasada" && (concl || d >= hojeLocal)) return false;
+    if (termo && !norm(`${t.title} ${t.assignee_name || ""}`).includes(termo)) return false;
+    return true;
+  });
+}
+
+function sincronizarControlosCalendario() {
+  const selMes = document.getElementById("cal-sel-mes"), selAno = document.getElementById("cal-sel-ano");
+  if (!selMes.options.length) selMes.innerHTML = NOMES_MES.map((n, i) => `<option value="${i}">${n}</option>`).join("");
+  const anos = new Set([calAnoAtual - 1, calAnoAtual, calAnoAtual + 1, new Date().getFullYear() - 2, new Date().getFullYear() + 2]);
+  estado.tarefas.forEach((t) => { if (t.due_date) anos.add(Number(soData(t.due_date).substring(0, 4))); });
+  const lista = [...anos].filter((a) => a > 1999 && a < 2100).sort((a, b) => a - b);
+  if (selAno.options.length !== lista.length || selAno.dataset.sig !== lista.join()) { selAno.innerHTML = lista.map((a) => `<option value="${a}">${a}</option>`).join(""); selAno.dataset.sig = lista.join(); }
+  selMes.value = calMesAtual; selAno.value = calAnoAtual;
+  const sel = document.getElementById("cal-f-resp");
+  if (sel.options.length - 1 !== estado.membros.length) {
+    const v = sel.value;
+    sel.innerHTML = `<option value="">Todos os responsáveis</option>` + estado.membros.map((m) => `<option value="${m.id}">${escaparHtml(m.name)}</option>`).join("");
+    sel.value = v;
+  }
+  // resumo
+  const de = document.getElementById("cal-f-de").value, ate = document.getElementById("cal-f-ate").value;
+  const filtradas = tarefasCalendarioFiltradas();
+  const ativos = ["cal-busca", "cal-f-prio", "cal-f-resp", "cal-f-estado", "cal-f-de", "cal-f-ate"].some((id) => document.getElementById(id).value);
+  const fmt = (iso) => new Date(iso + "T00:00:00").toLocaleDateString("pt-PT", { day: "2-digit", month: "short", year: "numeric" });
+  const nAtivos = ["cal-busca", "cal-f-prio", "cal-f-resp", "cal-f-estado", "cal-f-de", "cal-f-ate"].filter((id) => document.getElementById(id).value).length;
+  const bn = document.getElementById("cal-filtros-n"); bn.textContent = nAtivos || ""; bn.style.display = nAtivos ? "inline-flex" : "none";
+  const resumo = document.getElementById("cal-resumo-filtro");
+  resumo.innerHTML = ativos
+    ? `<i class="bi bi-funnel-fill"></i> <strong>${filtradas.length}</strong> tarefa${filtradas.length === 1 ? "" : "s"} com os filtros aplicados${de || ate ? ` · período ${de ? "de " + fmt(de) : ""}${ate ? " até " + fmt(ate) : ""}` : ""}`
+    : "";
+  resumo.style.display = ativos ? "block" : "none";
+  document.getElementById("cal-f-lista").style.display = de || ate ? "" : "none";
+}
+
+function iniciarFiltrosCalendario() {
+  const refresh = () => renderizarCalendario();
+  document.getElementById("cal-filtros-toggle").addEventListener("click", (e) => {
+    const w = document.getElementById("cal-filtros-wrap");
+    const aberto = w.classList.toggle("aberto");
+    e.currentTarget.setAttribute("aria-expanded", aberto);
+    e.currentTarget.classList.toggle("aberto", aberto);
+  });
+  document.getElementById("cal-busca").addEventListener("input", debounce(refresh));
+  ["cal-f-prio", "cal-f-resp", "cal-f-estado"].forEach((id) => document.getElementById(id).addEventListener("change", refresh));
+  document.getElementById("cal-sel-mes").addEventListener("change", (e) => { calMesAtual = Number(e.target.value); refresh(); });
+  document.getElementById("cal-sel-ano").addEventListener("change", (e) => { calAnoAtual = Number(e.target.value); refresh(); });
+  document.getElementById("cal-hoje").addEventListener("click", () => { const h = new Date(); calMesAtual = h.getMonth(); calAnoAtual = h.getFullYear(); refresh(); });
+  // Período: ao escolher "de", salta para esse mês
+  const periodo = () => {
+    const de = document.getElementById("cal-f-de").value, ate = document.getElementById("cal-f-ate").value;
+    if (de && ate && de > ate) { document.getElementById("cal-f-ate").value = de; }
+    const alvo = document.getElementById("cal-f-de").value || document.getElementById("cal-f-ate").value;
+    if (alvo) { const d = new Date(alvo + "T00:00:00"); calMesAtual = d.getMonth(); calAnoAtual = d.getFullYear(); }
+    refresh();
+  };
+  document.getElementById("cal-f-de").addEventListener("change", periodo);
+  document.getElementById("cal-f-ate").addEventListener("change", periodo);
+  // Ir para o dia: salta para o mês, destaca o dia e abre as tarefas dele (se houver)
+  document.getElementById("cal-f-dia").addEventListener("change", (e) => {
+    if (!e.target.value) return;
+    const d = new Date(e.target.value + "T00:00:00");
+    calMesAtual = d.getMonth(); calAnoAtual = d.getFullYear();
+    refresh();
+    const cel = document.querySelector(`#cal-corpo .cal-day[data-iso="${e.target.value}"]:not(.fora-do-mes)`);
+    if (cel) { cel.classList.add("destaque-dia"); cel.scrollIntoView({ behavior: "smooth", block: "center" }); setTimeout(() => cel.classList.remove("destaque-dia"), 2200); if (cel.classList.contains("com-tarefas")) setTimeout(() => cel.click(), 500); }
+  });
+  document.getElementById("cal-f-limpar").addEventListener("click", () => {
+    ["cal-busca", "cal-f-prio", "cal-f-resp", "cal-f-estado", "cal-f-de", "cal-f-ate", "cal-f-dia"].forEach((id) => (document.getElementById(id).value = ""));
+    refresh();
+  });
+  // Lista de todas as tarefas do período, numa janela
+  document.getElementById("cal-f-lista").addEventListener("click", () => {
+    const tarefas = tarefasCalendarioFiltradas().sort((a, b) => soData(a.due_date).localeCompare(soData(b.due_date)));
+    abrirListaTarefasModal(`Tarefas do período (${tarefas.length})`, tarefas, true);
+  });
+}
+// Janela com lista de tarefas (dia ou período) + pesquisa
+let tarefasModalDia = [];
+function abrirListaTarefasModal(titulo, tarefas, mostrarData) {
+  tarefasModalDia = tarefas.map((t) => ({ t, mostrarData }));
+  document.getElementById("titulo-modal-dia").textContent = titulo;
+  const busca = document.getElementById("dia-busca");
+  busca.value = "";
+  document.getElementById("dia-busca-box").style.display = tarefas.length > 1 ? "block" : "none";
+  renderizarListaModalDia();
+  document.getElementById("overlay-dia").classList.add("open");
+  if (tarefas.length > 1 && window.matchMedia("(hover: hover)").matches) setTimeout(() => busca.focus(), 350);
+}
+function renderizarListaModalDia() {
+  const termo = norm(document.getElementById("dia-busca").value.trim());
+  const itens = tarefasModalDia.filter(({ t }) => {
+    const col = estado.colunas.find((c) => c.id === t.column_id)?.name || "";
+    return !termo || norm(`${t.title} ${col} ${t.assignee_name || ""} ${t.priority}`).includes(termo);
+  });
+  document.getElementById("dia-contagem").textContent = termo ? `${itens.length} de ${tarefasModalDia.length}` : `${tarefasModalDia.length} tarefas`;
+  document.getElementById("lista-tarefas-dia").innerHTML = itens.map(({ t, mostrarData }) => {
     const nomeColuna = estado.colunas.find((c) => c.id === t.column_id)?.name || "—";
     return `
       <div class="tarefa-dia-item" onclick="fecharModalDia();abrirModalDetalhe('${t.id}')">
         <span class="prio prio-${t.priority}" style="margin:0">${t.priority}</span>
-        <div style="flex:1">
-          <div style="font-weight:600;font-size:13.5px">${t.title}</div>
-          <div style="font-size:11.5px;color:var(--ink-faint)">${nomeColuna}${t.assignee_name ? " · " + t.assignee_name : ""}</div>
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:600;font-size:13.5px">${escaparHtml(t.title)}</div>
+          <div style="font-size:11.5px;color:var(--ink-faint)">${mostrarData ? formatarData(t.due_date) + " · " : ""}${escaparHtml(nomeColuna)}${t.assignee_name ? " · " + escaparHtml(t.assignee_name) : ""}</div>
         </div>
       </div>`;
-  }).join("") || `<div class="sub">Sem tarefas neste dia.</div>`;
-  document.getElementById("overlay-dia").classList.add("open");
+  }).join("") || `<div class="sub">${tarefasModalDia.length ? "Nenhuma tarefa corresponde à pesquisa." : "Sem tarefas."}</div>`;
+}
+function abrirModalDia(chaveDia) {
+  const dia = new Date(chaveDia);
+  abrirListaTarefasModal(`Tarefas de ${dia.toLocaleDateString("pt-PT", { weekday: "long", day: "2-digit", month: "long" })}`, calTarefasPorDia.get(chaveDia) || [], false);
 }
 function fecharModalDia() {
   document.getElementById("overlay-dia").classList.remove("open");
@@ -1802,8 +2453,376 @@ function fecharModalDia() {
 
 // ---------------- Vista de Conversa da equipa ----------------
 async function carregarCanal() {
-  mensagensCanalCache = await api.get(`/api/projects/${projectId}/mensagens`);
+  await carregarGruposCanal();
+  await carregarMensagensGrupo();
+}
+
+async function carregarGruposCanal() {
+  try { gruposCanal = await api.get(`/api/projects/${projectId}/grupos`); } catch { gruposCanal = []; }
+  renderizarGruposCanal();
+}
+
+async function carregarMensagensGrupo() {
+  const g = grupoAtivo ? gruposCanal.find((x) => x.id === grupoAtivo) : null;
+  const form = document.getElementById("form-channel");
+  if (g && !g.sou_membro) {
+    // Gestor que ainda não entrou neste grupo: não vê o conteúdo.
+    mensagensCanalCache = [];
+    document.getElementById("channel-feed").innerHTML = `
+      <div class="empty-rich" style="margin:auto">
+        <div style="font-size:34px">🔒</div>
+        <h4>Ainda não faz parte de "${escaparHtml(g.name)}"</h4>
+        <p class="sub">Como responsável, pode entrar no grupo para ler e escrever.</p>
+        <button class="btn btn-primary" style="width:auto" onclick="entrarNoGrupo('${g.id}')">Entrar no grupo</button>
+      </div>`;
+    form.style.display = "none";
+    renderizarFixadas();
+    renderizarInfoGrupo();
+    return;
+  }
+  form.style.display = "";
+  mensagensCanalCache = await api.get(`/api/projects/${projectId}/mensagens${grupoAtivo ? `?grupo=${grupoAtivo}` : ""}`);
   renderizarFeedCanal({ manterScroll: false });
+  renderizarFixadas();
+  renderizarInfoGrupo();
+}
+
+async function selecionarGrupo(id) {
+  sairModoSelecao();
+  cancelarResposta();
+  grupoAtivo = id;
+  gruposNaoLidos.delete(id || "geral");
+  document.getElementById("channel-pesquisa").value = "";
+  document.getElementById("channel-digitando").innerHTML = "";
+  renderizarGruposCanal();
+  try { await carregarMensagensGrupo(); } catch (err) { mostrarToast(err.message); }
+}
+
+async function entrarNoGrupo(id) {
+  try {
+    await api.post(`/api/projects/grupos/${id}/entrar`, {});
+    await carregarGruposCanal();
+    await carregarMensagensGrupo();
+  } catch (err) { mostrarToast(err.message); }
+}
+
+async function sairDoGrupo() {
+  if (!grupoAtivo || !(await gpiConfirm("Sair deste grupo? Deixa de receber as mensagens dele."))) return;
+  try {
+    await api.post(`/api/projects/grupos/${grupoAtivo}/sair`, {});
+    await carregarGruposCanal();
+    await selecionarGrupo(null);
+  } catch (err) { mostrarToast(err.message); }
+}
+
+function renderizarGruposCanal() {
+  const box = document.getElementById("channel-grupos");
+  if (!box) return;
+  const chip = (id, rotulo, titulo, bloqueado) => `
+    <button type="button" class="grupo-chip ${grupoAtivo === id ? "ativo" : ""}" onclick="selecionarGrupo(${id ? `'${id}'` : "null"})" title="${escaparHtml(titulo || rotulo)}">
+      ${bloqueado ? '<i class="bi bi-lock-fill"></i>' : id ? '<i class="bi bi-people-fill"></i>' : '<i class="bi bi-hash"></i>'}
+      <span>${escaparHtml(rotulo)}</span>${gruposNaoLidos.has(id || "geral") ? '<span class="grupo-ponto"></span>' : ""}
+    </button>`;
+  box.innerHTML = chip(null, "Geral", "Conversa de toda a equipa") +
+    gruposCanal.map((g) => chip(g.id, g.name, g.task_title ? `Tarefa: ${g.task_title}` : g.name, !g.sou_membro)).join("") +
+    (souDonoDoProjeto() ? `<button type="button" class="grupo-chip novo" onclick="abrirModalGrupo()"><i class="bi bi-plus-lg"></i> <span>Novo grupo</span></button>` : "");
+}
+
+function renderizarInfoGrupo() {
+  const box = document.getElementById("channel-grupo-info");
+  const g = grupoAtivo ? gruposCanal.find((x) => x.id === grupoAtivo) : null;
+  if (!g) { box.style.display = "none"; return; }
+  box.style.display = "flex";
+  box.innerHTML = `
+    <div style="min-width:0"><strong>${escaparHtml(g.name)}</strong>
+      <span class="sub"> · ${g.total_membros} membro(s)${g.task_title ? ` · 🗂 ${escaparHtml(g.task_title)}` : ""}</span></div>
+    <span style="margin-left:auto;display:flex;gap:6px;flex-shrink:0">
+      ${souDonoDoProjeto() || g.sou_resp_grupo ? `<button type="button" class="mini-btn" onclick="abrirModalGrupo('${g.id}')"><i class="bi bi-gear"></i> Gerir</button>` : ""}
+      ${g.sou_membro ? `<button type="button" class="mini-btn" onclick="sairDoGrupo()"><i class="bi bi-box-arrow-right"></i> Sair</button>` : ""}
+    </span>`;
+}
+
+// ---------------- Mensagens fixadas ----------------
+function renderizarFixadas() {
+  const box = document.getElementById("channel-fixadas");
+  if (!box) return;
+  const fixadas = mensagensCanalCache.filter((m) => m.pinned_at && !m.deleted_at)
+    .sort((a, b) => new Date(b.pinned_at) - new Date(a.pinned_at));
+  if (fixadas.length === 0) { box.style.display = "none"; box.innerHTML = ""; return; }
+  box.style.display = "block";
+  const texto = (m) => escaparHtml((m.type === "texto" ? m.content : `📎 ${m.file_name || m.type}`) || "").slice(0, 120);
+  const linha = (m) => `
+    <div class="fixada-item" onclick="irParaMensagem('${m.id}')">
+      <i class="bi bi-pin-angle-fill"></i>
+      <div style="min-width:0;flex:1"><div class="fixada-autor">${escaparHtml(m.autor_nome)}</div><div class="fixada-texto">${texto(m)}</div></div>
+      ${souDonoDoProjeto() ? `<button type="button" class="mini-btn" style="margin:0" title="Desafixar" onclick="event.stopPropagation();fixarMensagem('${m.id}')"><i class="bi bi-pin-angle"></i></button>` : ""}
+    </div>`;
+  box.innerHTML = `
+    <div class="fixadas-topo" onclick="fixadasAbertas=!fixadasAbertas;renderizarFixadas()">
+      <i class="bi bi-pin-angle-fill"></i> <strong>${fixadas.length} fixada${fixadas.length > 1 ? "s" : ""}</strong>
+      ${fixadasAbertas ? "" : `<span class="fixada-previa">${texto(fixadas[0])}</span>`}
+      <i class="bi bi-chevron-${fixadasAbertas ? "up" : "down"}" style="margin-left:auto"></i>
+    </div>
+    ${fixadasAbertas ? `<div class="fixadas-lista">${fixadas.map(linha).join("")}</div>` : ""}`;
+}
+
+function irParaMensagem(id) {
+  const pesq = document.getElementById("channel-pesquisa");
+  if (pesq.value) { pesq.value = ""; renderizarFeedCanal({ manterScroll: false }); }
+  const el = document.querySelector(`.channel-msg[data-msg-id="${id}"]`);
+  if (!el) { mostrarToast("Mensagem fora do histórico carregado."); return; }
+  el.scrollIntoView({ behavior: "smooth", block: "center" });
+  el.classList.add("destaque");
+  setTimeout(() => el.classList.remove("destaque"), 1800);
+}
+
+function atualizarMarcaFixada(id) {
+  const m = mensagensCanalCache.find((x) => x.id === id);
+  const el = document.querySelector(`.channel-msg[data-msg-id="${id}"]`);
+  if (!m || !el) return;
+  el.classList.toggle("fixada", !!m.pinned_at);
+  const meta = el.querySelector(".meta");
+  meta?.querySelector(".channel-pin-tag")?.remove();
+  if (m.pinned_at && meta) meta.insertAdjacentHTML("beforeend", `<span class="channel-pin-tag" title="Mensagem fixada"><i class="bi bi-pin-angle-fill"></i> fixada</span>`);
+  const item = el.querySelector("[data-acao-fixar]");
+  if (item) item.innerHTML = m.pinned_at ? "📌 Desafixar" : "📌 Fixar";
+}
+
+async function fixarMensagem(id) {
+  document.querySelector(`.channel-msg[data-msg-id="${id}"]`)?.classList.remove("menu-aberto");
+  try { await api.post(`/api/projects/mensagens/${id}/fixar`, {}); } catch (err) { mostrarToast(err.message); }
+  // O resultado chega a todos via socket ("channel:pin").
+}
+
+// ---------------- Modo de seleção (copiar / eliminar várias) ----------------
+function entrarModoSelecao(idInicial) {
+  modoSelecao = true;
+  mensagensSelecionadas.clear();
+  if (idInicial) mensagensSelecionadas.add(idInicial);
+  document.getElementById("channel-feed").classList.add("modo-selecao");
+  document.getElementById("channel-selecao-bar").style.display = "flex";
+  document.getElementById("form-channel").style.display = "none";
+  cancelarResposta();
+  document.querySelectorAll(".channel-msg.menu-aberto").forEach((e) => e.classList.remove("menu-aberto"));
+  sincronizarSelecaoNoDom();
+}
+function sairModoSelecao() {
+  if (!modoSelecao) return;
+  modoSelecao = false;
+  mensagensSelecionadas.clear();
+  document.getElementById("channel-feed").classList.remove("modo-selecao");
+  document.getElementById("channel-selecao-bar").style.display = "none";
+  const g = grupoAtivo ? gruposCanal.find((x) => x.id === grupoAtivo) : null;
+  document.getElementById("form-channel").style.display = g && !g.sou_membro ? "none" : "";
+  sincronizarSelecaoNoDom();
+}
+function alternarSelecao(id) {
+  if (mensagensSelecionadas.has(id)) mensagensSelecionadas.delete(id); else mensagensSelecionadas.add(id);
+  sincronizarSelecaoNoDom();
+}
+function selecionarTodasVisiveis() {
+  const todas = [...document.querySelectorAll("#channel-feed .channel-msg:not(.eliminada)")].map((e) => e.dataset.msgId);
+  const todasJa = todas.length > 0 && todas.every((i) => mensagensSelecionadas.has(i));
+  mensagensSelecionadas.clear();
+  if (!todasJa) todas.forEach((i) => mensagensSelecionadas.add(i));
+  sincronizarSelecaoNoDom();
+}
+function sincronizarSelecaoNoDom() {
+  document.querySelectorAll("#channel-feed .channel-msg").forEach((el) => {
+    const sel = mensagensSelecionadas.has(el.dataset.msgId);
+    el.classList.toggle("selecionada", sel);
+    const cb = el.querySelector(".channel-sel-box");
+    if (cb) cb.checked = sel;
+  });
+  atualizarBarraSelecao();
+}
+function atualizarBarraSelecao() {
+  const n = mensagensSelecionadas.size;
+  const c = document.getElementById("channel-sel-contagem");
+  if (c) c.textContent = n === 1 ? "1 selecionada" : `${n} selecionadas`;
+  ["btn-sel-copiar", "btn-sel-eliminar"].forEach((id) => { const b = document.getElementById(id); if (b) b.disabled = n === 0; });
+}
+document.addEventListener("click", (e) => {
+  if (!modoSelecao) return;
+  const msg = e.target.closest("#channel-feed .channel-msg");
+  if (!msg || msg.classList.contains("eliminada")) return;
+  if (e.target.closest("a, audio, .channel-msg-acoes")) { if (!e.target.closest(".channel-sel-box")) return; }
+  e.preventDefault();
+  if (e.target.classList.contains("channel-sel-box")) { alternarSelecao(msg.dataset.msgId); return; }
+  alternarSelecao(msg.dataset.msgId);
+});
+
+async function copiarSelecionadas() {
+  const lista = mensagensCanalCache.filter((m) => mensagensSelecionadas.has(m.id))
+    .map((m) => `[${new Date(m.created_at).toLocaleString("pt-PT", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}] ${m.autor_nome}: ${m.type === "texto" ? m.content : `(${m.type}) ${m.file_name || ""}`}`);
+  try {
+    await navigator.clipboard.writeText(lista.join("\n"));
+    mostrarToast(`${lista.length} mensagem(ns) copiada(s).`);
+    sairModoSelecao();
+  } catch { mostrarToast("Não foi possível copiar."); }
+}
+
+// Regras: só minhas → "para todos" ou "para mim"; com mensagens de outros
+// (ou mistas) → apenas "para mim".
+function abrirEliminarSelecionadas() {
+  const sel = mensagensCanalCache.filter((m) => mensagensSelecionadas.has(m.id));
+  if (sel.length === 0) return;
+  const soMinhas = sel.every((m) => m.user_id === eu.id);
+  document.getElementById("sel-del-titulo").textContent = `Eliminar ${sel.length} mensagem${sel.length > 1 ? "ns" : ""}`;
+  document.getElementById("sel-del-texto").textContent = soMinhas
+    ? "Todas as mensagens selecionadas são suas: pode eliminá-las só para si ou para todos."
+    : "A seleção inclui mensagens de outras pessoas, por isso só pode eliminá-las para si. Os outros continuam a vê-las.";
+  document.getElementById("sel-del-todos").style.display = soMinhas ? "block" : "none";
+  document.getElementById("overlay-eliminar-selecao").classList.add("open");
+}
+function fecharEliminarSelecionadas() { document.getElementById("overlay-eliminar-selecao").classList.remove("open"); }
+async function confirmarEliminarSelecionadas(escopo) {
+  const ids = [...mensagensSelecionadas];
+  try {
+    await api.post("/api/projects/mensagens/eliminar", { ids, escopo });
+    if (escopo === "mim") {
+      mensagensCanalCache = mensagensCanalCache.filter((m) => !ids.includes(m.id));
+      renderizarFeedCanal();
+      renderizarFixadas();
+    }
+    // "todos" chega via socket ("channel:message-deleted") para cada mensagem.
+    fecharEliminarSelecionadas();
+    sairModoSelecao();
+  } catch (err) {
+    mostrarToast(err.message);
+    fecharEliminarSelecionadas();
+  }
+}
+
+// ---------------- Grupos: criar / gerir ----------------
+let grupoEmEdicao = null;
+async function abrirModalGrupo(groupId, taskIdPre) {
+  grupoEmEdicao = groupId || null;
+  document.getElementById("grupo-erro").style.display = "none";
+  document.getElementById("grupo-modal-titulo").textContent = groupId ? "Gerir grupo" : "Novo grupo";
+  document.getElementById("btn-grupo-eliminar").style.display = groupId ? "inline-flex" : "none";
+  document.getElementById("grupo-campo-tarefa").style.display = groupId ? "none" : "block";
+  const selTarefa = document.getElementById("grupo-tarefa");
+  selTarefa.innerHTML = `<option value="">— Nenhuma —</option>` + estado.tarefas.filter((t) => !t.parent_task_id)
+    .map((t) => `<option value="${t.id}">${escaparHtml(t.title)}</option>`).join("");
+  selTarefa.value = taskIdPre || "";
+  document.getElementById("grupo-nome").value = "";
+
+  let marcados = new Set();
+  let respSet = new Set();
+  let candidatos = estado.membros;
+  if (groupId) {
+    try {
+      const r = await api.get(`/api/projects/grupos/${groupId}/membros`);
+      document.getElementById("grupo-nome").value = r.grupo.name;
+      candidatos = r.membros;
+      marcados = new Set(r.membros.filter((m) => m.no_grupo).map((m) => m.id));
+      respSet = new Set(r.membros.filter((m) => m.resp).map((m) => m.id));
+    } catch (err) { mostrarToast(err.message); return; }
+  } else if (taskIdPre) {
+    const t = estado.tarefas.find((x) => x.id === taskIdPre);
+    document.getElementById("grupo-nome").value = t ? `Tarefa: ${t.title}`.slice(0, 80) : "";
+    if (t?.assignee_id) marcados.add(t.assignee_id);
+  }
+  marcados.add(eu.id); respSet.add(eu.id);
+  renderizarSeletorMembros("grupo-membros", candidatos, marcados, respSet, atualizarContagemGrupo);
+  document.getElementById("overlay-grupo").classList.add("open");
+}
+// ---- Seletor de membros (checkbox + ★ responsável do grupo), usado nas duas janelas
+function renderizarSeletorMembros(boxId, candidatos, marcados, resp, aoMudar) {
+  const box = document.getElementById(boxId);
+  box.innerHTML = candidatos.map((m, i) => `
+    <label class="grupo-membro" style="--i:${i}" data-uid="${m.id}">
+      <input type="checkbox" value="${m.id}" ${marcados.has(m.id) ? "checked" : ""} ${m.id === eu.id ? "disabled" : ""} />
+      <span class="avatar" style="width:26px;height:26px;font-size:10px;background:${m.avatar_color || corPara(m.id)}">${iniciais(m.name)}</span>
+      <span class="grupo-membro-nome">${escaparHtml(m.name)}${m.id === eu.id ? " (você)" : ""}</span>
+      <button type="button" class="grupo-resp-btn ${resp.has(m.id) || m.id === eu.id ? "ativo" : ""}" ${m.id === eu.id ? "disabled" : ""} title="Responsável do grupo">★<span> Responsável</span></button>
+    </label>`).join("");
+  const sincronizar = () => {
+    box.querySelectorAll(".grupo-membro").forEach((l) => {
+      const marcado = l.querySelector("input").checked;
+      l.classList.toggle("on", marcado);
+      const b = l.querySelector(".grupo-resp-btn");
+      b.style.visibility = marcado ? "visible" : "hidden";
+    });
+    aoMudar?.();
+  };
+  box.querySelectorAll("input").forEach((i) => i.addEventListener("change", () => {
+    if (!i.checked) i.closest(".grupo-membro").querySelector(".grupo-resp-btn").classList.remove("ativo");
+    sincronizar();
+  }));
+  box.querySelectorAll(".grupo-resp-btn").forEach((b) => b.addEventListener("click", (ev) => {
+    ev.preventDefault(); ev.stopPropagation();
+    if (!b.disabled) b.classList.toggle("ativo");
+  }));
+  sincronizar();
+}
+function lerSeletorMembros(boxId) {
+  const member_ids = [], responsavel_ids = [];
+  document.querySelectorAll(`#${boxId} .grupo-membro`).forEach((l) => {
+    if (!l.querySelector("input").checked) return;
+    member_ids.push(l.dataset.uid);
+    if (l.querySelector(".grupo-resp-btn").classList.contains("ativo")) responsavel_ids.push(l.dataset.uid);
+  });
+  return { member_ids, responsavel_ids };
+}
+
+function atualizarContagemGrupo() {
+  const n = document.querySelectorAll("#grupo-membros input:checked").length;
+  document.getElementById("grupo-contagem").textContent = `(${n} selecionado${n === 1 ? "" : "s"})`;
+}
+function fecharModalGrupo() { document.getElementById("overlay-grupo").classList.remove("open"); }
+
+async function guardarGrupo() {
+  const erro = document.getElementById("grupo-erro");
+  erro.style.display = "none";
+  const name = document.getElementById("grupo-nome").value.trim();
+  if (!name) { erro.textContent = "Dê um nome ao grupo."; erro.style.display = "block"; return; }
+  const { member_ids, responsavel_ids } = lerSeletorMembros("grupo-membros");
+  try {
+    if (grupoEmEdicao) {
+      await api.put(`/api/projects/grupos/${grupoEmEdicao}`, { name });
+      await api.put(`/api/projects/grupos/${grupoEmEdicao}/membros`, { member_ids, responsavel_ids });
+      fecharModalGrupo();
+      await carregarGruposCanal();
+      renderizarInfoGrupo();
+    } else {
+      const g = await api.post(`/api/projects/${projectId}/grupos`, { name, member_ids, responsavel_ids, task_id: document.getElementById("grupo-tarefa").value || undefined });
+      fecharModalGrupo();
+      await carregarGruposCanal();
+      vistasCarregadas.add("conversa");
+      mudarVista("conversa");
+      await selecionarGrupo(g.id);
+    }
+  } catch (err) { erro.textContent = err.message; erro.style.display = "block"; }
+}
+
+async function eliminarGrupo() {
+  if (!grupoEmEdicao || !(await gpiConfirm("Eliminar este grupo e todas as suas mensagens? Isto não pode ser desfeito."))) return;
+  try {
+    await api.del(`/api/projects/grupos/${grupoEmEdicao}`);
+    fecharModalGrupo();
+    await carregarGruposCanal();
+    if (grupoAtivo === grupoEmEdicao) await selecionarGrupo(null);
+  } catch (err) { mostrarToast(err.message); }
+}
+
+// Botão "Grupo da tarefa" no detalhe da tarefa (só responsáveis/admin)
+async function abrirGrupoDaTarefa() {
+  if (!tarefaAtiva) return;
+  const taskId = tarefaAtiva.id;
+  try { await carregarGruposCanal(); } catch {}
+  const g = gruposCanal.find((x) => x.task_id === taskId);
+  if (!g) { fecharModalDetalhe(); await abrirModalGrupo(null, taskId); return; }
+  fecharModalDetalhe();
+  vistasCarregadas.add("conversa");
+  mudarVista("conversa");
+  await selecionarGrupo(g.id);
+}
+function atualizarBotaoGrupoTarefa() {
+  const sec = document.getElementById("det-sec-grupo");
+  if (!sec) return;
+  sec.style.display = souDonoDoProjeto() && tarefaAtiva && !tarefaAtiva.parent_task_id ? "block" : "none";
 }
 
 // Pesquisar na conversa (Slack): filtra localmente pelo texto da mensagem ou
@@ -1860,7 +2879,10 @@ function criarBolhaCanal(m) {
   } else if (m.type === "audio") {
     conteudo = `<audio class="channel-audio-player" controls src="${urlComToken}"></audio>`;
   } else if (m.type === "ficheiro") {
-    conteudo = `<a class="channel-file-chip" href="${urlComToken}" target="_blank" rel="noopener">📎 ${escaparHtml(m.file_name)} <span style="color:var(--ink-faint);margin-left:auto">${formatarTamanhoFicheiro(m.file_size || 0)}</span></a>`;
+    conteudo = `<div class="channel-file-chip">
+      <a class="channel-file-abrir" href="${urlComToken}" target="_blank" rel="noopener" title="Abrir">📎 ${escaparHtml(m.file_name)}</a>
+      <span class="channel-file-tam">${formatarTamanhoFicheiro(m.file_size || 0)}</span>
+      <a class="channel-file-baixar" href="${urlComToken}&baixar=1" download="${escaparHtml(m.file_name)}" title="Descarregar">⬇</a></div>`;
   } else {
     conteudo = `<div class="bubble">${realcarMencoes(m.content)}</div>`;
   }
@@ -1884,6 +2906,7 @@ function criarBolhaCanal(m) {
   // depois se é só para si ou para todos — "para todos" só é aceite pelo
   // servidor se for o autor ou um responsável do projeto/admin).
   const podeEliminarTodos = minha || souDonoDoProjeto();
+  const gestor = souDonoDoProjeto();
   const acoes = eliminada ? "" : `
     <div class="channel-msg-acoes">
       <button type="button" class="channel-msg-acoes-btn" onclick="alternarEmojiPicker('${m.id}')" title="Reagir">🙂</button>
@@ -1894,16 +2917,19 @@ function criarBolhaCanal(m) {
       <div class="channel-msg-menu">
         <div class="channel-msg-menu-item" onclick="responderMensagem('${m.id}')">↩️ Responder</div>
         ${m.type === "texto" ? `<div class="channel-msg-menu-item" onclick="copiarMensagem('${m.id}')">📋 Copiar</div>` : ""}
+        ${gestor ? `<div class="channel-msg-menu-item" data-acao-fixar onclick="fixarMensagem('${m.id}')">📌 ${m.pinned_at ? "Desafixar" : "Fixar"}</div>` : ""}
+        <div class="channel-msg-menu-item" onclick="entrarModoSelecao('${m.id}')">☑️ Selecionar</div>
         ${minha && m.type === "texto" ? `<div class="channel-msg-menu-item" onclick="iniciarEdicaoMensagem('${m.id}')">✏️ Editar</div>` : ""}
         <div class="channel-msg-menu-item perigo" onclick="pedirEliminarMensagem('${m.id}', ${podeEliminarTodos})">🗑️ Eliminar</div>
       </div>
     </div>`;
 
   return `
-    <div class="channel-msg ${minha ? "mine" : ""} ${eliminada ? "eliminada" : ""}" data-msg-id="${m.id}" data-content="${escaparHtml(m.content || "")}" data-autor="${escaparHtml(m.autor_nome)}">
+    <div class="channel-msg ${minha ? "mine" : ""} ${eliminada ? "eliminada" : ""} ${m.pinned_at && !eliminada ? "fixada" : ""} ${mensagensSelecionadas.has(m.id) ? "selecionada" : ""}" data-msg-id="${m.id}" data-content="${escaparHtml(m.content || "")}" data-autor="${escaparHtml(m.autor_nome)}">
+      ${eliminada ? "" : `<input type="checkbox" class="channel-sel-box" ${mensagensSelecionadas.has(m.id) ? "checked" : ""} tabindex="-1" />`}
       <div class="avatar" style="width:28px;height:28px;font-size:11px;background:${m.avatar_color || corPara(m.user_id)}">${iniciais(m.autor_nome)}</div>
       <div style="flex:1;min-width:0">
-        <div class="meta">${minha ? "Você" : m.autor_nome} · ${new Date(m.created_at).toLocaleString("pt-PT", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}${m.edited_at && !eliminada ? `<span class="channel-edited-tag">(editada)</span>` : ""}</div>
+        <div class="meta">${minha ? "Você" : m.autor_nome} · ${new Date(m.created_at).toLocaleString("pt-PT", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}${m.edited_at && !eliminada ? `<span class="channel-edited-tag">(editada)</span>` : ""}${m.pinned_at && !eliminada ? `<span class="channel-pin-tag" title="Mensagem fixada"><i class="bi bi-pin-angle-fill"></i> fixada</span>` : ""}</div>
         ${citacao}
         ${conteudo}
         ${reacoes}
@@ -2064,7 +3090,7 @@ async function enviarMensagemCanal(e) {
   input.value = "";
   const reply_to_id = respostaAtiva?.id || undefined;
   cancelarResposta();
-  await api.post(`/api/projects/${projectId}/mensagens`, { content: texto, reply_to_id });
+  await api.post(`/api/projects/${projectId}/mensagens`, { content: texto, reply_to_id, grupo_id: grupoAtivo || undefined });
   // A própria mensagem chega de volta via socket ("channel:message"), por isso
   // não a acrescentamos aqui — evita mostrá-la em duplicado.
 }
@@ -2074,6 +3100,7 @@ async function enviarMediaCanal(file, tipo, duracaoSegundos) {
   formData.append("ficheiro", file);
   formData.append("tipo", tipo);
   if (duracaoSegundos) formData.append("duracao", Math.round(duracaoSegundos));
+  if (grupoAtivo) formData.append("grupo_id", grupoAtivo);
   try {
     await api.upload(`/api/projects/${projectId}/mensagens/multimedia`, formData);
   } catch (err) {
@@ -2121,11 +3148,13 @@ const ROTULO_ACAO_AUTOMACAO = {
   atribuir: (a) => `atribui a tarefa a ${a.atribuir_nome || "—"}`,
   definir_prioridade: (a) => `muda a prioridade para ${{ alta: "🔴 Alta", media: "🟡 Média", baixa: "🟢 Baixa" }[a.set_priority] || a.set_priority}`,
   concluir_checklist: () => `marca toda a checklist como concluída`,
+  iniciar_tempo: () => `inicia o registo de tempo do responsável da tarefa`,
 };
 
 async function carregarAutomacoes() {
   const selColuna = document.getElementById("auto-coluna");
   selColuna.innerHTML = estado.colunas.map((c) => `<option value="${c.id}">${c.name}</option>`).join("");
+  alternarCamposAcaoAutomacao();
 
   const selNotificar = document.getElementById("auto-notificar");
   selNotificar.innerHTML = `<option value="">O responsável do projeto</option>` +
@@ -2137,7 +3166,15 @@ async function carregarAutomacoes() {
   const souGestor = souDonoDoProjeto();
   document.getElementById("card-nova-automacao").style.display = souGestor ? "" : "none";
 
-  const automacoes = await api.get(`/api/projects/${projectId}/automacoes`);
+  automacoesCache = await api.get(`/api/projects/${projectId}/automacoes`);
+  renderizarAutomacoes();
+}
+let automacoesCache = [];
+function renderizarAutomacoes() {
+  const souGestor = souDonoDoProjeto();
+  const termo = norm(document.getElementById("auto-busca").value.trim());
+  const automacoes = automacoesCache.filter((a) => !termo || norm(`${a.name} ${a.coluna_nome} ${(ROTULO_ACAO_AUTOMACAO[a.action_type] || ROTULO_ACAO_AUTOMACAO.notificar)(a)}`).includes(termo));
+  document.getElementById("auto-contagem").textContent = termo ? `${automacoes.length} de ${automacoesCache.length}` : `${automacoesCache.length} automação(ões)`;
   document.getElementById("lista-automacoes").innerHTML = automacoes.map((a) => `
     <div class="report-card" style="margin-bottom:10px">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px">
@@ -2154,11 +3191,17 @@ async function carregarAutomacoes() {
           </div>` : ""}
       </div>
     </div>
-  `).join("") || `<div class="sub">Ainda não há automações criadas neste projeto.</div>`;
+  `).join("") || `<div class="sub">${automacoesCache.length ? "Nenhuma automação corresponde à pesquisa." : "Ainda não há automações criadas neste projeto."}</div>`;
 }
 
 function alternarCamposAcaoAutomacao() {
   const tipo = document.getElementById("auto-acao").value;
+  // "Iniciar registo de tempo" só pode disparar em colunas que não sejam concluídas nem protegidas
+  const selCol = document.getElementById("auto-coluna");
+  const anterior = selCol.value;
+  const validas = tipo === "iniciar_tempo" ? estado.colunas.filter((c) => !c.is_done && !c.restricted) : estado.colunas;
+  selCol.innerHTML = validas.map((c) => `<option value="${c.id}">${escaparHtml(c.name)}</option>`).join("");
+  if (validas.some((c) => c.id === anterior)) selCol.value = anterior;
   document.getElementById("campo-auto-notificar").style.display = tipo === "notificar" ? "" : "none";
   document.getElementById("campo-auto-atribuir").style.display = tipo === "atribuir" ? "" : "none";
   document.getElementById("campo-auto-prioridade").style.display = tipo === "definir_prioridade" ? "" : "none";
@@ -2195,7 +3238,7 @@ async function alternarAutomacao(id, active) {
 }
 
 async function eliminarAutomacao(id) {
-  if (!confirm("Eliminar esta automação?")) return;
+  if (!(await gpiConfirm("Eliminar esta automação?"))) return;
   try {
     await api.del(`/api/projects/automacoes/${id}`);
     await carregarAutomacoes();
@@ -2205,3 +3248,113 @@ async function eliminarAutomacao(id) {
 }
 
 iniciar();
+
+
+// ---------------- Navegação horizontal do quadro ----------------
+// O quadro tem altura limitada ao ecrã (as colunas rolam por dentro), por isso a
+// barra horizontal está sempre visível. Além disso: setas laterais, atalhos de
+// colunas, arrastar o fundo, rolagem automática ao arrastar tarefas e roda do rato.
+function iniciarNavegacaoQuadro() {
+  const cont = document.getElementById("board-columns");
+  if (!cont || cont.dataset.navLigada) return;
+  cont.dataset.navLigada = "1";
+  const esq = document.getElementById("board-seta-esq");
+  const dir = document.getElementById("board-seta-dir");
+  const passo = () => Math.max(300, Math.round(cont.clientWidth * 0.8));
+
+  esq.addEventListener("click", () => cont.scrollBy({ left: -passo(), behavior: "smooth" }));
+  dir.addEventListener("click", () => cont.scrollBy({ left: passo(), behavior: "smooth" }));
+
+  const atualizar = () => {
+    const max = cont.scrollWidth - cont.clientWidth;
+    esq.classList.toggle("visivel", cont.scrollLeft > 8);
+    dir.classList.toggle("visivel", cont.scrollLeft < max - 8);
+    // realça o atalho da coluna mais visível
+    const cx = cont.getBoundingClientRect().left + 120;
+    let ativa = null;
+    cont.querySelectorAll(".column").forEach((c) => { if (c.getBoundingClientRect().left <= cx) ativa = c.dataset.colId; });
+    document.querySelectorAll("#board-nav .board-nav-chip").forEach((b) => {
+      const era = b.classList.contains("ativo");
+      b.classList.toggle("ativo", b.dataset.col === ativa);
+      // mantém o atalho da coluna atual visível dentro da própria barra (telemóvel)
+      if (!era && b.dataset.col === ativa) {
+        const nv = document.getElementById("board-nav");
+        nv.scrollTo({ left: b.offsetLeft - nv.clientWidth / 2 + b.offsetWidth / 2, behavior: "smooth" });
+      }
+    });
+  };
+  cont.addEventListener("scroll", () => requestAnimationFrame(atualizar), { passive: true });
+  window.addEventListener("resize", atualizar);
+
+  const nav = document.getElementById("board-nav");
+  const reconstruir = () => {
+    const cols = [...cont.querySelectorAll(".column[data-col-id]")];
+    const precisa = cont.scrollWidth > cont.clientWidth + 4 && cols.length > 1;
+    nav.style.display = precisa ? "flex" : "none";
+    nav.innerHTML = precisa ? `<span class="board-nav-rot"><i class="bi bi-layout-three-columns"></i> Ir para:</span>` + cols.map((c) => {
+      const nome = c.querySelector(".column-head h4")?.textContent.trim() || "Coluna";
+      const n = c.querySelector(".column-count")?.textContent || "";
+      return `<button type="button" class="board-nav-chip" data-col="${c.dataset.colId}">${escaparHtml(nome)} <span>${n}</span></button>`;
+    }).join("") : "";
+    atualizar();
+  };
+  nav.addEventListener("click", (e) => {
+    const b = e.target.closest(".board-nav-chip");
+    if (!b) return;
+    const col = cont.querySelector(`.column[data-col-id="${b.dataset.col}"]`);
+    if (!col) return;
+    cont.scrollTo({ left: col.offsetLeft - cont.offsetLeft - 8, behavior: "smooth" });
+    col.classList.add("destaque-col");
+    setTimeout(() => col.classList.remove("destaque-col"), 1300);
+  });
+  let pend = null;
+  new MutationObserver(() => { clearTimeout(pend); pend = setTimeout(reconstruir, 60); }).observe(cont, { childList: true });
+  reconstruir();
+
+  // Roda do rato: com o rato sobre o cabeçalho/fundo (não sobre a lista de cartões) rola na horizontal
+  cont.addEventListener("wheel", (e) => {
+    if (e.target.closest(".cards-zone") && !e.shiftKey) return;
+    if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) { cont.scrollLeft += e.deltaY; e.preventDefault(); }
+  }, { passive: false });
+
+  // Arrastar o fundo para "empurrar" o quadro (estilo mapa)
+  let pan = null;
+  cont.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0 || e.target.closest(".task-card, button, input, select, textarea, a, .column-head, .add-task-btn, [onclick]")) return;
+    pan = { x: e.clientX, sl: cont.scrollLeft, id: e.pointerId, ativo: false };
+  });
+  cont.addEventListener("pointermove", (e) => {
+    if (!pan) return;
+    const dx = e.clientX - pan.x;
+    // Só começa a "empurrar" depois de mexer uns píxeis, para o clique simples (ex.: "+ Nova coluna") continuar a funcionar
+    if (!pan.ativo) {
+      if (Math.abs(dx) < 5) return;
+      pan.ativo = true;
+      cont.classList.add("panning");
+      cont.setPointerCapture?.(pan.id);
+    }
+    cont.scrollLeft = pan.sl - dx;
+  });
+  const fimPan = () => { pan = null; cont.classList.remove("panning"); };
+  cont.addEventListener("pointerup", fimPan);
+  cont.addEventListener("pointercancel", fimPan);
+
+  // Ao arrastar uma tarefa para perto das bordas, o quadro desloca-se sozinho
+  let auto = 0, rafAuto = null;
+  const loop = () => { if (!auto) { rafAuto = null; return; } cont.scrollLeft += auto; rafAuto = requestAnimationFrame(loop); };
+  const parar = () => { auto = 0; };
+  cont.addEventListener("dragover", (e) => {
+    const r = cont.getBoundingClientRect(), zona = 90;
+    auto = e.clientX < r.left + zona ? -Math.ceil((r.left + zona - e.clientX) / 5) : e.clientX > r.right - zona ? Math.ceil((e.clientX - (r.right - zona)) / 5) : 0;
+    if (auto && !rafAuto) rafAuto = requestAnimationFrame(loop);
+  });
+  ["dragend", "drop", "dragleave"].forEach((ev) => document.addEventListener(ev, (e) => { if (ev !== "dragleave" || !cont.contains(e.relatedTarget)) parar(); }));
+
+  // Atalhos: Alt + ← / → saltam de coluna em coluna
+  document.addEventListener("keydown", (e) => {
+    if (!e.altKey || (e.key !== "ArrowLeft" && e.key !== "ArrowRight")) return;
+    if (document.getElementById("view-quadro")?.style.display === "none") return;
+    cont.scrollBy({ left: e.key === "ArrowLeft" ? -310 : 310, behavior: "smooth" });
+    e.preventDefault();
+  });
+}

@@ -10,33 +10,21 @@
 </head>
 <body>
   <div class="auth-shell">
-    <div class="auth-hero">
-      <a href="/" style="display:inline-flex;align-items:center;gap:10px;text-decoration:none;color:var(--ink);margin-bottom:22px">
-        <img src="/img/unikivi-logo.png" alt="Unikivi" style="width:36px;height:36px;border-radius:50%;background:#fff;padding:2px" />
-        <b style="font-size:14.5px">GPI Track</b>
-      </a>
-      <div class="eyebrow">GPI · Uíge, Angola</div>
-      <h1>O progresso da sua equipa,<br/>a acontecer ao vivo.</h1>
-      <p>Protótipo académico de ferramenta de gestão de projetos colaborativa,
-         desenvolvido para o estudo de acompanhamento de equipas em regime de
-         home office. Quadro Kanban, comentários e presença da equipa
-         sincronizados em tempo real via WebSockets.</p>
-      <div class="pulse-row">
-        <span class="pulse-dot"></span>
-        <span>Sincronização em tempo real ativa</span>
-      </div>
-    </div>
 
     <div class="auth-panel">
       <div class="auth-card">
+        <a href="/" class="auth-marca">
+          <img src="/img/unikivi-logo.png" alt="Unikivi" />
+          <b>GPI Track</b>
+        </a>
         <div class="tabs">
           <div class="tab-btn active" data-tab="login">Entrar</div>
           <div class="tab-btn" data-tab="registo">Criar conta</div>
         </div>
 
         <div id="painel-login">
-          <h2>Bem-vindo de volta</h2>
-          <div class="sub">Entre para ver o quadro da sua equipa.</div>
+          <h2>Trabalhe em equipa, em tempo real</h2>
+          <div class="sub">Entre e veja o seu projeto avançar ao vivo.</div>
           <div class="error-box" id="erro-login"></div>
           <form id="form-login">
             <div class="field">
@@ -57,7 +45,6 @@
             <div class="divisor-ou">ou</div>
             <div class="google-slot" id="google-login"></div>
           </div>
-          <div class="hint" id="hint-demo" style="display:none">Conta de demonstração: vital@ukv.ao / 123456</div>
         </div>
 
         <div id="painel-mfa" style="display:none">
@@ -138,7 +125,12 @@
           password: document.getElementById("login-password").value,
         });
         if (resposta.mfa_required) {
-          mostrarPassoMFA(resposta.mfa_token);
+          mfaTokenPendente = resposta.mfa_token;
+          document.getElementById("painel-login").style.display = "none";
+          document.getElementById("painel-registo").style.display = "none";
+          document.querySelector(".tabs").style.display = "none";
+          document.getElementById("painel-mfa").style.display = "block";
+          document.getElementById("mfa-codigo").focus();
           return;
         }
         sessao.guardarToken(resposta.token);
@@ -151,14 +143,6 @@
 
     // ---- Segundo passo: código de 6 dígitos (2FA/TOTP) ----
     let mfaTokenPendente = null;
-    function mostrarPassoMFA(token) {
-      mfaTokenPendente = token;
-      document.getElementById("painel-login").style.display = "none";
-      document.getElementById("painel-registo").style.display = "none";
-      document.querySelector(".tabs").style.display = "none";
-      document.getElementById("painel-mfa").style.display = "block";
-      document.getElementById("mfa-codigo").focus();
-    }
     document.getElementById("form-mfa").addEventListener("submit", async (e) => {
       e.preventDefault();
       const erroBox = document.getElementById("erro-mfa");
@@ -201,10 +185,8 @@
     // ---- Entrar com o Google ----
     // O botão só aparece se o servidor tiver GOOGLE_CLIENT_ID configurado.
     async function iniciarGoogle() {
-      let cfg = {};
-      try { cfg = await api.get("/api/auth/config"); } catch {}
-      if (cfg.mostrarContaDemo) document.getElementById("hint-demo").style.display = "block";
-      const clientId = cfg.googleClientId;
+      let clientId = null;
+      try { clientId = (await api.get("/api/auth/config")).googleClientId; } catch {}
       if (!clientId) return;
 
       await new Promise((resolve, reject) => {
@@ -224,9 +206,7 @@
           const erroBox = document.getElementById(painelRegisto ? "erro-registo" : "erro-login");
           erroBox.style.display = "none";
           try {
-            const resp = await api.post("/api/auth/google", { credential });
-            if (resp.mfa_required) { mostrarPassoMFA(resp.mfa_token); return; }
-            const { token, novo } = resp;
+            const { token, novo } = await api.post("/api/auth/google", { credential });
             sessao.guardarToken(token);
             window.location.href = novo ? "/onboarding.html" : "/projetos.html";
           } catch (err) {
@@ -273,5 +253,6 @@
       }
     });
   </script>
+  <script src="/js/voltar.js"></script>
 </body>
 </html>

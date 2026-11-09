@@ -18,9 +18,7 @@
         <img src="/img/unikivi-logo.png" alt="Unikivi" class="brand-mark" style="background:#fff;object-fit:contain;border-radius:50%;padding:2px" />
         <div class="brand-name">GPI Track</div>
       </div>
-      <div class="nav-section-label">Espaço de trabalho</div>
-      <div id="lista-lateral"></div>
-      <div style="margin-top:14px;display:none" id="bloco-espaco-gestao">
+      <div style="display:none" id="bloco-espaco-gestao">
         <div style="padding:9px 10px;border-radius:8px;cursor:pointer;font-size:13px;color:var(--ink-dim);border:1px solid var(--border)" onclick="location.href='/workspace.html'">🧭 Espaço de gestão</div>
       </div>
       <div id="nav-admin" style="display:none;margin-top:10px">
@@ -58,8 +56,6 @@
         <div class="col-6 col-lg-3"><div class="kpi-tile"><span class="kpi-ico c2"><i class="bi bi-check2-circle"></i></span><div><div class="kpi-num" id="kpi-feitas">0</div><div class="kpi-label">Concluídas</div></div></div></div>
         <div class="col-6 col-lg-3"><div class="kpi-tile"><span class="kpi-ico c3"><i class="bi bi-alarm"></i></span><div><div class="kpi-num" id="kpi-atraso">0</div><div class="kpi-label">Em atraso</div></div></div></div>
       </div>
-      <div id="bloco-convites" style="display:none;margin-bottom:26px"></div>
-      <div id="bloco-aprovar-convites" style="display:none;margin-bottom:26px"></div>
       <div class="project-grid" id="grid-projetos"></div>
     </main>
   </div>
@@ -114,88 +110,21 @@
       const socket = io({ auth: { token: sessao.obterToken() } });
       iniciarNotificacoes(socket);
 
-      await carregarConvites();
-      await carregarPedidosParaAprovar();
+      // Convites (recebidos e para aprovar) vivem agora nas notificações (🔔).
+      // Quando um convite é aceite, a lista de projetos atualiza-se sozinha.
+      window.addEventListener("convites:alterados", () => carregarProjetos());
       await carregarProjetos();
-    }
-
-    async function carregarPedidosParaAprovar() {
-      const pedidos = await api.get("/api/projects/convites/para-aprovar");
-      const bloco = document.getElementById("bloco-aprovar-convites");
-      if (pedidos.length === 0) { bloco.style.display = "none"; return; }
-      bloco.style.display = "block";
-      bloco.innerHTML = `
-        <div class="nav-section-label" style="margin-top:0">Pedidos de convite para aprovar</div>
-        ${pedidos.map((p) => `
-          <div class="project-card" style="cursor:default;border-color:var(--warn);margin-bottom:12px">
-            <h3>🙋 ${p.utilizador_nome}</h3>
-            <p>${p.utilizador_email} — proposto por ${p.proposto_por || "—"} para o projeto "${p.projeto_nome}".</p>
-            <div style="display:flex;gap:10px">
-              <button class="btn btn-primary" style="width:auto" onclick="responderPedidoAprovacao('${p.projeto_id}', '${p.utilizador_id}', true)">Aprovar</button>
-              <button class="btn" style="width:auto;background:transparent;border:1px solid var(--border);color:var(--ink)" onclick="responderPedidoAprovacao('${p.projeto_id}', '${p.utilizador_id}', false)">Rejeitar</button>
-            </div>
-          </div>
-        `).join("")}
-      `;
-    }
-
-    async function responderPedidoAprovacao(projetoId, utilizadorId, aprovar) {
-      try {
-        await api.post(`/api/projects/${projetoId}/membros/${utilizadorId}/aprovar-convite`, { aprovar });
-        mostrarToast(aprovar ? "Convite aprovado e enviado ao convidado." : "Pedido de convite rejeitado.");
-        await carregarPedidosParaAprovar();
-      } catch (err) {
-        mostrarToast(err.message);
-      }
-    }
-
-    async function carregarConvites() {
-      const convites = await api.get("/api/projects/convites/meus");
-      const bloco = document.getElementById("bloco-convites");
-      if (convites.length === 0) { bloco.style.display = "none"; return; }
-      bloco.style.display = "block";
-      bloco.innerHTML = `
-        <div class="nav-section-label" style="margin-top:0">Convites pendentes</div>
-        ${convites.map((c) => `
-          <div class="project-card" style="cursor:default;border-color:var(--cyan-dim);margin-bottom:12px">
-            <h3>✉️ ${c.projeto_nome}</h3>
-            <p>${c.descricao || "Sem descrição."}</p>
-            <div class="meta" style="margin-bottom:14px">
-              <span>Equipa: ${c.equipa_nome || "—"}</span>
-              <span>${c.total_membros} membro${c.total_membros === 1 ? "" : "s"} · ${c.total_tarefas} tarefa${c.total_tarefas === 1 ? "" : "s"}</span>
-            </div>
-            <div style="font-size:11.5px;color:var(--ink-faint);margin-bottom:14px">Convidado(a) por ${c.convidado_por || "—"}</div>
-            <div style="display:flex;gap:10px">
-              <button class="btn btn-primary" style="width:auto" onclick="responderConvite('${c.projeto_id}', true)">Aceitar</button>
-              <button class="btn" style="width:auto;background:transparent;border:1px solid var(--border);color:var(--ink)" onclick="responderConvite('${c.projeto_id}', false)">Recusar</button>
-            </div>
-          </div>
-        `).join("")}
-      `;
-    }
-
-    async function responderConvite(projetoId, aceitar) {
-      try {
-        await api.post(`/api/projects/${projetoId}/convite/${aceitar ? "aceitar" : "recusar"}`);
-        mostrarToast(aceitar ? "Convite aceite! Já faz parte do projeto." : "Convite recusado.");
-        await carregarConvites();
-        await carregarProjetos();
-      } catch (err) {
-        mostrarToast(err.message);
-      }
     }
 
     async function carregarProjetos() {
       const projetos = await api.get("/api/projects");
       const grid = document.getElementById("grid-projetos");
-      const lateral = document.getElementById("lista-lateral");
 
       const souResponsavelDeAlgum = projetos.some((p) => p.meu_papel === "responsavel");
       document.getElementById("bloco-espaco-gestao").style.display =
         (eu.role === "admin" || souResponsavelDeAlgum) ? "block" : "none";
 
       grid.innerHTML = "";
-      lateral.innerHTML = "";
       const soma = (k) => projetos.reduce((n, p) => n + (Number(p[k]) || 0), 0);
       document.getElementById("kpi-projetos").textContent = projetos.length;
       document.getElementById("kpi-tarefas").textContent = soma("total_tarefas");
@@ -237,7 +166,6 @@
             </div>
           </div>
         `;
-        lateral.innerHTML += `<div class="new-project-card" style="padding:10px;margin-bottom:8px;text-align:left;display:block;cursor:pointer" onclick="abrirProjeto('${p.id}')">${p.name}</div>`;
       });
 
       grid.innerHTML += `
@@ -247,9 +175,10 @@
         </div>
       `;
 
+      if (window.animarEntrada) animarEntrada();
       grid.querySelectorAll("[data-del-proj]").forEach((el) => {
         el.addEventListener("click", async () => {
-          if (!confirm(`Eliminar definitivamente o projeto "${el.dataset.nome}"? Esta ação não pode ser revertida.`)) return;
+          if (!(await gpiConfirm(`Eliminar definitivamente o projeto "${el.dataset.nome}"? Esta ação não pode ser revertida.`))) return;
           try {
             await api.del(`/api/projects/${el.dataset.delProj}`);
             await carregarProjetos();
@@ -260,7 +189,7 @@
       });
       grid.querySelectorAll("[data-sair-proj]").forEach((el) => {
         el.addEventListener("click", async () => {
-          if (!confirm("Sair deste projeto?")) return;
+          if (!(await gpiConfirm("Sair deste projeto?"))) return;
           try {
             await api.del(`/api/projects/${el.dataset.sairProj}/membros/${eu.id}`);
             await carregarProjetos();
@@ -296,5 +225,6 @@
 
     iniciar();
   </script>
+  <script src="/js/voltar.js"></script>
 </body>
 </html>

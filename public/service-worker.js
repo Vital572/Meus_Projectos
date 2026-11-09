@@ -4,7 +4,7 @@
 // continuam a precisar de ligação — isto só evita o ecrã em branco "sem
 // internet" do navegador quando a pessoa volta a uma página já vista antes.
 
-const CACHE_VERSAO = "gpitrack-v3";
+const CACHE_VERSAO = "gpitrack-v42";
 
 // Núcleo da aplicação, guardado em cache logo na instalação.
 const FICHEIROS_NUCLEO = [
@@ -19,6 +19,7 @@ const FICHEIROS_NUCLEO = [
   "/js/ui-shell.js",
   "/js/lp-partials.js",
   "/js/tutoriais.js",
+  "/js/conteudo-lp.js",
   "/img/unikivi-logo.png",
   "/img/icons/icon-192.png",
   "/img/icons/icon-512.png",
@@ -53,10 +54,6 @@ self.addEventListener("fetch", (evento) => {
   if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/socket.io/") || url.pathname.startsWith("/uploads/")) {
     return;
   }
-
-  // Páginas com "?token=" (ex.: ligação de recuperação de password) nunca são
-  // guardadas em cache — o token ficaria gravado no dispositivo.
-  if (url.searchParams.has("token")) return;
 
   // Para o resto (páginas, CSS, JS, imagens estáticas): tenta a rede primeiro
   // (para nunca mostrar uma versão desatualizada por engano) e, só se falhar
